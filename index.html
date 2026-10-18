@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Reisekarte</title>
+  <meta name="theme-color" content="#0c6b73">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Reisekarte">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icon-180.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+  <link rel="stylesheet" href="vendor/leaflet/leaflet.css">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app">
+    <aside class="panel" aria-label="Reiseplan">
+      <header class="panel-head">
+        <div class="brand">Reisekarte</div>
+        <input id="trip-title" class="trip-title" type="text" aria-label="Name der Reise" placeholder="Name der Reise">
+        <div class="trip-meta">
+          <label class="date-field">Anreise
+            <input id="start-date" type="date">
+          </label>
+          <span id="trip-summary" class="trip-summary"></span>
+          <button id="today-btn" class="btn primary" data-action="today" hidden>Heute</button>
+          <button id="map-toggle" class="btn ghost mobile-only" data-action="toggle-map">Karte ausblenden</button>
+        </div>
+        <div class="toolbar">
+          <button class="btn ghost" data-action="export">Exportieren</button>
+          <label class="btn ghost file-btn">Importieren
+            <input id="import-file" type="file" accept="application/json,.json">
+          </label>
+          <button class="btn ghost" data-action="sample">Beispiel laden</button>
+          <button class="btn ghost danger" data-action="clear-all">Neu anfangen</button>
+        </div>
+      </header>
+
+      <div id="days" class="days"></div>
+
+      <div class="panel-foot">
+        <button class="add-btn add-day" data-action="add-day">+ Tag hinzufügen</button>
+      </div>
+    </aside>
+
+    <main class="map-wrap">
+      <div id="map" aria-label="Karte der Reiseroute"></div>
+      <div id="pick-banner" class="pick-banner" hidden>
+        <span>Klicke auf die Karte, um den Ort zu setzen.</span>
+        <button class="btn" data-action="cancel-map-pick">Abbrechen</button>
+      </div>
+      <div class="map-tools">
+        <button class="btn map-btn" data-action="fit-all">Ganze Reise</button>
+        <button class="btn map-btn" data-action="retry-routes" title="Fehlgeschlagene Routen erneut abfragen">Routen neu laden</button>
+      </div>
+      <div class="legend" aria-label="Legende">
+        <div class="legend-row"><span class="lg-pin">⌂</span>Unterkunft · Nächte</div>
+        <div class="legend-row"><span class="lg-line lg-transfer"></span>Ortswechsel</div>
+        <div class="legend-row"><span class="lg-line lg-trip"></span>Ausflug (Farbe = Tag)</div>
+        <div class="legend-row"><span class="lg-line lg-train"></span>Zug</div>
+        <div class="legend-row"><span class="lg-line lg-flight"></span>Flug</div>
+        <div class="legend-row"><span class="lg-line lg-air"></span>Luftlinie (keine Route)</div>
+      </div>
+    </main>
+  </div>
+
+  <div id="lightbox" class="lightbox" data-action="close-photo" hidden>
+    <img id="lightbox-img" alt="Foto in voller Größe">
+    <button class="btn" data-action="close-photo">Schließen</button>
+  </div>
+
+  <script src="vendor/leaflet/leaflet.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
