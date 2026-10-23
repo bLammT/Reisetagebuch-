@@ -8,6 +8,7 @@ Web-App zum Planen einer Reise auf einer Karte:
 - **Karte**: Jeder Tag hat eine eigene Farbe. Ein Klick auf „Tag N“ hebt den Tag hervor und zoomt hin. Strecke und Fahrzeit stehen bei jedem Ausflug.
 - **Tagebuch**: pro Tag beliebig viele Einträge mit Text, Fotos und optionalem Ort („Mein Standort“ per GPS). Einträge mit Ort erscheinen als ✎-Pin auf der Karte.
 - **Speichern**: automatisch im Browser (Reiseplan und Texte in localStorage, Fotos verkleinert in IndexedDB). „Exportieren“ erstellt eine Sicherung inklusive Fotos; „Importieren“ stellt sie wieder her. Wird nur ein Reiseplan ohne Tagebuch importiert, bleibt das vorhandene Tagebuch erhalten.
+- **Online-Sync (optional)**: Mit eigenem Server (Home-Assistant-Add-on „Reisetagebuch Server“, siehe [bLammT/ha-addons](https://github.com/bLammT/ha-addons)) und Login ist die Reise auf allen Geräten gleich und lässt sich mit Mitreisenden teilen. Änderungen gehen kurz verzögert an den Server; offline wird später nachgeholt. Wurde die Reise woanders geändert, während hier noch ungespeicherte Änderungen liegen, fragt die App, welcher Stand gilt. Fotos bleiben auf dem Gerät.
 - **Handy**: installierbar auf dem Startbildschirm (PWA) und startet auch offline. Die Karte selbst braucht Internet.
 
 ## Starten
@@ -29,6 +30,7 @@ python3 -m http.server 8000
 | `app.js` | Datenmodell, Rendering, Karte, Ortssuche, Routing |
 | `sw.js`, `manifest.webmanifest`, `icon*` | Offline-Start und Installation auf dem Handy |
 | `vendor/leaflet/` | Leaflet 1.9.4 (Kartenbibliothek, BSD-2-Lizenz) |
+| `vendor/pocketbase/` | PocketBase JS-SDK 0.28.1 für den Online-Sync (MIT-Lizenz) |
 
 Das Datenmodell steht oben in `app.js` als Kommentar.
 
@@ -44,6 +46,7 @@ dann unter *Settings → Pages* „Deploy from a branch“, Branch `main`, Ordne
 |---|---|---|
 | Kartenkacheln | `tile.openstreetmap.org` | Laut OSM-Tile-Policy nicht für Apps mit viel Traffic gedacht |
 | Ortssuche | Nominatim (`nominatim.openstreetmap.org`) | Höchstens 1 Anfrage pro Sekunde, keine Massenabfragen. Die App hält diese Grenze ein |
+| Online-Sync (optional) | eigener PocketBase-Server | Nur wenn im Dialog „Online-Sync“ eine Adresse eingetragen ist. Muss über `https://` erreichbar sein |
 | Routen | FOSSGIS-OSRM (`routing.openstreetmap.de`, Profile `routed-car`, `routed-bike`, `routed-foot`) | Öffentlicher Dienst mit Fair-Use-Regeln. Antwortet er nicht, zeigt die App die Luftlinie (gestrichelt) |
 
 Die genauen Nutzungsbedingungen bitte direkt bei den Anbietern nachlesen, bevor die App öffentlich geht.
@@ -56,5 +59,6 @@ Für ein echtes Produkt brauchst du eigene oder bezahlte Dienste, z. B. MapTiler
 - Reihenfolge der Ausflüge innerhalb eines Tages per Drag & Drop ändern
 - Mehrere Reisen verwalten
 - Höhenprofil und Wanderwege (eigene Karte, z. B. OpenTopoMap)
-- Sync zwischen Geräten (Backend oder z. B. Supabase/Firebase)
+- Fotos online speichern oder verlinken
+- Mitreisende direkt in der App einladen (bisher über die PocketBase-Admin-Oberfläche)
 - Als installierbare PWA oder native App (React Native / Flutter)

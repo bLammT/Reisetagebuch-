@@ -149,9 +149,21 @@ const ui = {
   jdraft: null, // Tagebucheintrag in Bearbeitung: { dayId, entryId|null, data, added, removed, error, busy, locating }
 };
 
+// Online-Sync (siehe Abschnitt weiter unten). Gespeichert wird nur die Verknüpfung, die Anmeldung hält das PocketBase-SDK.
+const SYNC_KEY = 'reisekarte.sync.v1';
+const syncCfg = { url: '', tripId: null, tripTitle: '', remoteUpdated: null, dirty: false, ...loadJSON(SYNC_KEY, {}) };
+const sync = {
+  pb: null, // PocketBase-Client, sobald eine Server-Adresse eingetragen ist
+  methods: null, // Anmeldearten des Servers
+  trips: null, // Liste der Online-Reisen zur Auswahl
+  conflict: null, // neuerer Server-Datensatz, während hier ungespeicherte Änderungen liegen
+  error: null, offline: false, busy: false, pushing: false, pushAgain: false, timer: null,
+  version: 0, // zählt lokale Änderungen, damit eine Änderung während des Hochladens nicht verloren geht
+};
 
 function save() {
   saveJSON(STORAGE_KEY, state);
+  markDirty();
 }
 
 const dayIndex = (id) => state.days.findIndex((d) => d.id === id);
@@ -971,6 +983,288 @@ function closeEntryDraft(keepPhotos) {
   if (ui.mapPick?.startsWith('jdraft:')) ui.mapPick = null;
 }
 
+/* ---------------------------------------------------------------- Online-Sync */
+
+// Optional: Die Reise liegt zusätzlich auf einem eigenen PocketBase-Server (z. B. dem Home-Assistant-Add-on).
+// Lokal wird weiter alles gespeichert; Änderungen gehen kurz verzögert an den Server.
+// Hat sich die Reise auf dem Server geändert, während hier noch ungespeicherte Änderungen liegen,
+// entscheidet der Nutzer, welcher Stand gilt. Fotos bleiben auf dem Gerät.
+
+const saveSync = () => saveJSON(SYNC_KEY, syncCfg);
+const loggedIn = () => Boolean(sync.pb?.authStore.isValid);
+const linked = () => loggedIn() && Boolean(syncCfg.tripId);
+const parseServerTime = (s) => new Date(String(s).replace(' ', 'T'));
+const syncTimeFmt = new Intl.DateTimeFormat('de-DE', { dateStyle: 'short', timeStyle: 'short' });
+
+function connectServer() {
+  sync.pb = null; sync.methods = null; sync.trips = null;
+  if (!syncCfg.url || !window.PocketBase) return;
+  sync.pb = new PocketBase(syncCfg.url);
+  sync.pb.autoCancellation(false);
+}
+
+function markDirty() {
+  if (!syncCfg.tripId) return;
+  sync.version++;
+  if (!syncCfg.dirty) { syncCfg.dirty = true; saveSync(); }
+  clearTimeout(sync.timer);
+  sync.timer = setTimeout(pushTrip, 1500);
+  renderSyncStatus();
+}
+
+function unlinkTrip() {
+  clearTimeout(sync.timer);
+  Object.assign(syncCfg, { tripId: null, tripTitle: '', remoteUpdated: null, dirty: false });
+  sync.conflict = null; sync.trips = null;
+  saveSync();
+}
+
+function syncErrorText(err) {
+  if (!err.status) return 'Der Server ist nicht erreichbar. Stimmt die Adresse, und bist du online?';
+  if (err.status === 400 && /auth-with-password/.test(err.url)) return 'E-Mail oder Passwort ist falsch.';
+  if (err.status === 429) return 'Zu viele Versuche. Warte kurz und probier es dann noch einmal.';
+  return `Der Server meldet: ${err.response?.message || err.message} (${err.status})`;
+}
+
+function handleSyncError(err) {
+  if (err.isAbort) return;
+  if (!err.status) { sync.offline = true; return; }
+  sync.offline = false;
+  if (err.status === 404 && syncCfg.tripId) {
+    sync.error = 'Die Online-Reise gibt es nicht mehr, oder du hast keinen Zugriff mehr. Die Reise ist jetzt nur noch auf diesem Gerät gespeichert.';
+    unlinkTrip();
+  } else if (err.status === 401) {
+    sync.error = 'Deine Anmeldung ist abgelaufen. Bitte melde dich neu an.';
+    sync.pb.authStore.clear();
+  } else {
+    sync.error = syncErrorText(err);
+  }
+}
+
+async function pushTrip() {
+  clearTimeout(sync.timer);
+  if (!linked() || !syncCfg.dirty || sync.conflict) return;
+  if (sync.pushing) { sync.pushAgain = true; return; }
+  sync.pushing = true; sync.error = null;
+  renderSyncStatus();
+  const version = sync.version;
+  try {
+    const col = sync.pb.collection('trips');
+    const remote = await col.getOne(syncCfg.tripId, { fields: 'id,updated' });
+    if (remote.updated !== syncCfg.remoteUpdated) {
+      sync.conflict = await col.getOne(syncCfg.tripId);
+      openSync();
+    } else {
+      const rec = await col.update(syncCfg.tripId, { title: state.title, data: state }, { fields: 'id,title,updated' });
+      syncCfg.remoteUpdated = rec.updated; syncCfg.tripTitle = rec.title;
+      if (sync.version === version) syncCfg.dirty = false;
+      saveSync();
+    }
+    sync.offline = false;
+  } catch (err) {
+    handleSyncError(err);
+  }
+  sync.pushing = false;
+  // Während des Hochladens geändert: gleich noch einmal. Fehler und Offline wiederholt der Timer unten.
+  if (sync.pushAgain || (syncCfg.dirty && !sync.error && !sync.offline && !sync.conflict)) {
+    sync.pushAgain = false;
+    sync.timer = setTimeout(pushTrip, 1500);
+  }
+  renderSyncStatus(); renderSync();
+}
+
+async function pullTrip() {
+  if (!linked() || sync.pushing || sync.conflict) return;
+  try {
+    const rec = await sync.pb.collection('trips').getOne(syncCfg.tripId);
+    sync.offline = false; sync.error = null;
+    if (rec.id !== syncCfg.tripId || sync.pushing) return;
+    if (rec.updated === syncCfg.remoteUpdated) {
+      if (syncCfg.dirty) pushTrip();
+    } else if (syncCfg.dirty) {
+      sync.conflict = rec;
+      openSync();
+    } else if (!ui.draft && !ui.jdraft) {
+      // Mitten in einer Bearbeitung nicht austauschen; der nächste Abgleich holt es nach.
+      applyRemote(rec, false);
+    }
+  } catch (err) {
+    handleSyncError(err);
+  }
+  renderSyncStatus(); renderSync();
+}
+
+function applyRemote(rec, fit) {
+  let next;
+  try {
+    next = normalizeTrip(rec.data);
+  } catch {
+    sync.error = 'Die Online-Reise enthält keine gültigen Reisedaten.';
+    return;
+  }
+  next.journal = next.journal.filter((e) => next.days.some((d) => d.id === e.dayId));
+  state = next;
+  Object.assign(syncCfg, { tripId: rec.id, tripTitle: rec.title, remoteUpdated: rec.updated, dirty: false });
+  sync.conflict = null;
+  saveSync();
+  saveJSON(STORAGE_KEY, state);
+  closeDraft(); closeEntryDraft();
+  if (ui.focusDay && !dayById(ui.focusDay)) ui.focusDay = null;
+  ui.sel = null;
+  $('#trip-title').value = state.title; // render() lässt das Feld sonst in Ruhe, solange es den Fokus hat
+  render(); drawMap(fit);
+}
+
+async function loadTripList() {
+  sync.trips = await sync.pb.collection('trips').getFullList({ sort: '-updated', fields: 'id,title,updated,owner' });
+}
+
+async function loadAuthMethods() {
+  try {
+    sync.methods = await sync.pb.collection('users').listAuthMethods();
+  } catch {
+    sync.methods = null;
+  }
+}
+
+// Führt eine Aktion im Sync-Dialog aus und zeigt Fehler dort an.
+async function runSync(fn) {
+  sync.busy = true; sync.error = null;
+  renderSync();
+  try {
+    await fn();
+  } catch (err) {
+    if (!err.isAbort) sync.error = err.status === undefined ? err.message : syncErrorText(err);
+  }
+  sync.busy = false;
+  renderSync(); renderSyncStatus();
+}
+
+async function afterLogin() {
+  if (syncCfg.tripId) await pullTrip();
+  else await loadTripList();
+}
+
+function syncStatus() {
+  if (!sync.pb) return { text: 'Online-Sync', cls: '' };
+  if (!loggedIn()) return { text: 'Anmelden', cls: 'is-warn' };
+  if (!syncCfg.tripId) return { text: 'Online: keine Reise', cls: '' };
+  if (sync.conflict) return { text: 'Sync: Konflikt', cls: 'is-bad' };
+  if (sync.error) return { text: 'Sync-Fehler', cls: 'is-bad' };
+  if (sync.pushing) return { text: 'Speichert…', cls: '' };
+  if (syncCfg.dirty) return { text: sync.offline ? 'Offline · noch nicht online' : 'Wird gespeichert…', cls: 'is-warn' };
+  return { text: 'Online ✓', cls: 'is-ok' };
+}
+
+function renderSyncStatus() {
+  const btn = $('#sync-btn');
+  if (!btn) return;
+  const st = syncStatus();
+  btn.textContent = st.text;
+  btn.classList.remove('is-ok', 'is-warn', 'is-bad');
+  if (st.cls) btn.classList.add(st.cls);
+}
+
+function syncBodyHTML() {
+  const pb = sync.pb;
+  const dis = sync.busy ? ' disabled' : '';
+  const err = sync.error ? `<p class="editor-error" role="alert">${esc(sync.error)}</p>` : '';
+
+  if (!pb) {
+    return `
+      <p class="sync-text">Speichere die Reise auf deinem eigenen Server, zum Beispiel dem Home-Assistant-Add-on „Reisetagebuch Server“, und nutze sie auf mehreren Geräten.</p>
+      <form class="sync-form" data-submit="sync-set-server">
+        <label class="text-field">Server-Adresse
+          <input name="url" type="url" required inputmode="url" autocomplete="url" placeholder="https://name.duckdns.org:8091" value="${esc(syncCfg.url)}">
+        </label>
+        <div class="editor-actions"><button class="btn primary"${dis}>Verbinden</button></div>
+      </form>${err}`;
+  }
+
+  const serverLine = `Server: <span class="sync-mono">${esc(syncCfg.url)}</span>`;
+  const server = `<p class="sync-meta">${serverLine}</p>`;
+
+  if (!loggedIn()) {
+    const google = sync.methods?.oauth2?.enabled && sync.methods.oauth2.providers.some((p) => p.name === 'google');
+    return `${server}
+      <form class="sync-form" data-submit="sync-login">
+        <label class="text-field">E-Mail
+          <input name="email" type="email" required autocomplete="username">
+        </label>
+        <label class="text-field">Passwort
+          <input name="password" type="password" required autocomplete="current-password">
+        </label>
+        <div class="editor-actions">
+          <button class="btn primary"${dis}>Anmelden</button>
+          ${google ? `<button type="button" class="btn" data-action="sync-google"${dis}>Mit Google anmelden</button>` : ''}
+        </div>
+      </form>${err}
+      <div class="editor-actions"><button class="btn ghost" data-action="sync-change-server">Anderen Server eintragen</button></div>`;
+  }
+
+  const who = `<p class="sync-meta">Angemeldet als <strong>${esc(pb.authStore.record?.email || '')}</strong><br>${serverLine}</p>`;
+  const footer = `<div class="editor-actions sync-foot"><button class="btn ghost" data-action="sync-logout">Abmelden</button></div>`;
+
+  if (sync.conflict) {
+    const when = syncTimeFmt.format(parseServerTime(sync.conflict.updated));
+    return `${who}
+      <div class="sync-box is-bad">
+        <p><strong>Die Reise wurde auch woanders geändert</strong> (online zuletzt am ${esc(when)}). Auf diesem Gerät gibt es Änderungen, die noch nicht online sind.</p>
+        <p>Welcher Stand soll gelten? Der andere geht verloren. Mit „Exportieren“ kannst du den Stand auf diesem Gerät vorher sichern.</p>
+        <div class="editor-actions">
+          <button class="btn primary" data-action="sync-keep-local"${dis}>Stand von diesem Gerät</button>
+          <button class="btn" data-action="sync-take-remote"${dis}>Online-Stand laden</button>
+        </div>
+      </div>${err}${footer}`;
+  }
+
+  if (!syncCfg.tripId) {
+    const list = sync.trips === null
+      ? '<p class="sync-text">Lade Online-Reisen…</p>'
+      : sync.trips.length
+        ? `<ul class="sync-list">${sync.trips.map((t) => `
+            <li><span><strong>${esc(t.title || 'Ohne Namen')}</strong><span class="sync-meta">geändert ${esc(syncTimeFmt.format(parseServerTime(t.updated)))}${t.owner !== pb.authStore.record?.id ? ' · geteilt' : ''}</span></span>
+              <button class="btn" data-action="sync-open-trip" data-trip="${esc(t.id)}"${dis}>Öffnen</button></li>`).join('')}</ul>`
+        : '<p class="sync-text">Du hast noch keine Online-Reisen.</p>';
+    return `${who}
+      <h3 class="sync-sub">Online-Reisen</h3>${list}
+      <div class="editor-actions"><button class="btn primary" data-action="sync-upload"${dis}>„${esc(state.title)}“ online speichern</button></div>${err}${footer}`;
+  }
+
+  const st = syncStatus();
+  const last = syncCfg.remoteUpdated ? syncTimeFmt.format(parseServerTime(syncCfg.remoteUpdated)) : '–';
+  return `${who}
+    <div class="sync-box">
+      <p>Diese Reise ist mit <strong>${esc(syncCfg.tripTitle || state.title)}</strong> verbunden.</p>
+      <p class="sync-meta">Status: ${esc(st.text)} · online zuletzt geändert ${esc(last)}</p>
+      ${sync.offline ? '<p class="sync-meta">Keine Verbindung zum Server. Änderungen werden gespeichert, sobald er wieder erreichbar ist.</p>' : ''}
+      <p class="sync-meta">Fotos bleiben auf dem Gerät, auf dem sie aufgenommen wurden.</p>
+      <div class="editor-actions">
+        <button class="btn primary" data-action="sync-now"${dis}>Jetzt abgleichen</button>
+        <button class="btn" data-action="sync-unlink"${dis}>Andere Reise öffnen</button>
+      </div>
+    </div>${err}${footer}`;
+}
+
+function renderSync() {
+  const dlg = $('#sync-dialog');
+  if (!dlg?.open) return;
+  // Eingaben überleben das Neuzeichnen (z. B. die E-Mail nach falschem Passwort).
+  const typed = Object.fromEntries([...dlg.querySelectorAll('input[name]')].map((i) => [i.name, i.value]));
+  const focused = document.activeElement?.name;
+  $('#sync-body').innerHTML = syncBodyHTML();
+  dlg.querySelectorAll('input[name]').forEach((i) => { if (typed[i.name]) i.value = typed[i.name]; });
+  if (focused) dlg.querySelector(`[name="${focused}"]`)?.focus();
+}
+
+function openSync() {
+  const dlg = $('#sync-dialog');
+  if (!dlg.open) dlg.showModal();
+  renderSync();
+  if (sync.pb && !loggedIn() && !sync.methods) loadAuthMethods().then(renderSync);
+  if (loggedIn() && !syncCfg.tripId && !sync.trips) runSync(loadTripList);
+}
+
 /* ---------------------------------------------------------------- Aktionen */
 
 function newDraft(dayId, ex) {
@@ -1237,16 +1531,121 @@ const actions = {
     }
   },
   sample() {
-    if (!confirm('Die aktuelle Reise inklusive Tagebuch durch die Beispielreise ersetzen? Exportiere sie vorher, wenn du sie behalten willst.')) return;
+    if (!confirm(`Die aktuelle Reise inklusive Tagebuch durch die Beispielreise ersetzen? Exportiere sie vorher, wenn du sie behalten willst.${syncCfg.tripId ? ' Die Online-Reise bleibt unverändert, dieses Gerät gleicht danach aber nicht mehr mit ihr ab.' : ''}`)) return;
     state.journal.flatMap((e) => e.photos).forEach(forgetPhoto);
+    unlinkTrip(); renderSyncStatus();
     state = sampleTrip(); closeDraft(); closeEntryDraft(); ui.focusDay = null; ui.sel = null;
     save(); render(); drawMap(true);
   },
   'clear-all'() {
-    if (!confirm('Alle Tage und das Tagebuch löschen und eine leere Reise beginnen? Exportiere vorher, wenn du sie behalten willst.')) return;
+    if (!confirm(`Alle Tage und das Tagebuch löschen und eine leere Reise beginnen? Exportiere vorher, wenn du sie behalten willst.${syncCfg.tripId ? ' Die Online-Reise bleibt unverändert, dieses Gerät gleicht danach aber nicht mehr mit ihr ab.' : ''}`)) return;
     state.journal.flatMap((e) => e.photos).forEach(forgetPhoto);
+    unlinkTrip(); renderSyncStatus();
     state = emptyTrip(); closeDraft(); closeEntryDraft(); ui.focusDay = null; ui.sel = null;
     save(); render(); drawMap(true);
+  },
+  'open-sync'() { openSync(); },
+  'close-sync'() { $('#sync-dialog').close(); },
+  'sync-set-server'(form) {
+    let url;
+    try {
+      url = new URL(form.elements.url.value.trim());
+    } catch {
+      sync.error = 'Das ist keine gültige Adresse. Beispiel: https://name.duckdns.org:8091';
+      renderSync(); return;
+    }
+    if (url.protocol !== 'https:' && !['localhost', '127.0.0.1'].includes(url.hostname)) {
+      sync.error = 'Die Adresse muss mit https:// beginnen, sonst blockiert der Browser die Verbindung.';
+      renderSync(); return;
+    }
+    runSync(async () => {
+      const pb = new PocketBase(url.origin);
+      await pb.health.check();
+      syncCfg.url = url.origin;
+      unlinkTrip();
+      connectServer();
+      await loadAuthMethods();
+    });
+  },
+  'sync-change-server'() {
+    sync.pb?.authStore.clear();
+    unlinkTrip();
+    syncCfg.url = '';
+    saveSync();
+    connectServer(); sync.error = null;
+    renderSync(); renderSyncStatus();
+  },
+  'sync-login'(form) {
+    const email = form.elements.email.value.trim();
+    const password = form.elements.password.value;
+    runSync(async () => {
+      await sync.pb.collection('users').authWithPassword(email, password);
+      await afterLogin();
+    });
+  },
+  'sync-google'() {
+    // Das Fenster muss direkt im Klick geöffnet werden, sonst blockiert Safari es.
+    const popup = window.open('', '_blank');
+    runSync(async () => {
+      try {
+        await sync.pb.collection('users').authWithOAuth2({
+          provider: 'google',
+          urlCallback: (url) => { if (popup) popup.location.href = url; else window.open(url, '_blank'); },
+        });
+      } catch (err) {
+        popup?.close();
+        throw err;
+      }
+      await afterLogin();
+    });
+  },
+  'sync-logout'() {
+    clearTimeout(sync.timer);
+    if (syncCfg.dirty && !confirm('Es gibt Änderungen, die noch nicht online sind. Trotzdem abmelden? Sie bleiben auf diesem Gerät gespeichert.')) return;
+    sync.pb.authStore.clear();
+    unlinkTrip();
+    sync.error = null;
+    renderSync(); renderSyncStatus();
+  },
+  'sync-upload'() {
+    runSync(async () => {
+      const rec = await sync.pb.collection('trips').create(
+        { owner: sync.pb.authStore.record.id, title: state.title, data: state },
+        { fields: 'id,title,updated' },
+      );
+      Object.assign(syncCfg, { tripId: rec.id, tripTitle: rec.title, remoteUpdated: rec.updated, dirty: false });
+      saveSync();
+    });
+  },
+  'sync-open-trip'(el) {
+    const t = sync.trips?.find((x) => x.id === el.dataset.trip);
+    if (!t) return;
+    if (!confirm(`Die Reise auf diesem Gerät durch „${t.title || 'Ohne Namen'}“ ersetzen? Exportiere sie vorher, wenn du sie behalten willst.`)) return;
+    runSync(async () => {
+      const rec = await sync.pb.collection('trips').getOne(t.id);
+      applyRemote(rec, true);
+    });
+  },
+  'sync-unlink'() {
+    if (syncCfg.dirty && !confirm('Es gibt Änderungen, die noch nicht online sind. Trotzdem trennen? Sie bleiben nur auf diesem Gerät.')) return;
+    unlinkTrip();
+    runSync(loadTripList);
+  },
+  'sync-now'() {
+    runSync(() => (syncCfg.dirty ? pushTrip() : pullTrip()));
+  },
+  'sync-keep-local'() {
+    syncCfg.remoteUpdated = sync.conflict.updated;
+    syncCfg.dirty = true;
+    sync.conflict = null;
+    saveSync();
+    runSync(pushTrip);
+  },
+  'sync-take-remote'() {
+    const rec = sync.conflict;
+    sync.conflict = null;
+    applyRemote(rec, true);
+    renderSync(); renderSyncStatus();
   },
 };
 
@@ -1255,6 +1654,14 @@ document.addEventListener('click', (e) => {
   if (!el || !actions[el.dataset.action]) return;
   e.preventDefault();
   actions[el.dataset.action](el);
+});
+
+// Formulare (Sync-Dialog): Enter und Absenden-Knopf.
+document.addEventListener('submit', (e) => {
+  const form = e.target.closest('form[data-submit]');
+  if (!form || !actions[form.dataset.submit]) return;
+  e.preventDefault();
+  actions[form.dataset.submit](form);
 });
 
 document.addEventListener('input', (e) => {
@@ -1301,6 +1708,9 @@ async function importFile(file) {
     } else if (state.journal.length && !confirm('Import ersetzt deine aktuelle Reise inklusive Tagebuch. Fortfahren?')) {
       return;
     }
+    if (syncCfg.tripId && !confirm('Die Reise ist mit einer Online-Reise verbunden. Soll die importierte Datei die Online-Reise ersetzen? „Abbrechen“ trennt die Verbindung, die Online-Reise bleibt dann unverändert.')) {
+      unlinkTrip(); renderSyncStatus();
+    }
     next.journal = next.journal.filter((e) => dayIds.has(e.dayId));
     if (raw.photos && typeof raw.photos === 'object') {
       for (const [id, dataUrl] of Object.entries(raw.photos)) {
@@ -1333,6 +1743,23 @@ document.addEventListener('keydown', (e) => {
 
 render();
 drawMap(true);
+
+// Online-Sync: Anmeldung auffrischen und Stand vom Server holen.
+connectServer();
+renderSyncStatus();
+if (loggedIn()) {
+  sync.pb.collection('users').authRefresh().catch((err) => {
+    if (err.status === 401) { sync.pb.authStore.clear(); renderSyncStatus(); }
+  });
+  pullTrip();
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') pullTrip();
+});
+window.addEventListener('online', () => (syncCfg.dirty ? pushTrip() : pullTrip()));
+setInterval(() => {
+  if (document.visibilityState === 'visible') (syncCfg.dirty ? pushTrip() : pullTrip());
+}, 60000);
 
 // Auf dem Handy direkt zum heutigen Tag springen.
 if (todayIndex() >= 0) setTimeout(() => scrollToDay(state.days[todayIndex()].id), 300);

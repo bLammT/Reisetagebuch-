@@ -8,6 +8,7 @@
   --accent: #0c6b73;
   --accent-soft: #dcecec;
   --danger: #b4321f;
+  --warn: #9a5800;
   --field: #ffffff;
 
   /* Kartenfarben: die OSM-Karte ist immer hell, deshalb ändern sich diese im Dunkelmodus nicht. */
@@ -27,13 +28,13 @@
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --bg: #0f1619; --panel: #151e22; --ink: #e4ecec; --muted: #93a3a6;
-    --line: #2a373c; --accent: #5cc1c8; --accent-soft: #19333a; --danger: #f07a63; --field: #0f1619;
+    --line: #2a373c; --accent: #5cc1c8; --accent-soft: #19333a; --danger: #f07a63; --warn: #e3a64a; --field: #0f1619;
     color-scheme: dark;
   }
 }
 :root[data-theme="dark"] {
   --bg: #0f1619; --panel: #151e22; --ink: #e4ecec; --muted: #93a3a6;
-  --line: #2a373c; --accent: #5cc1c8; --accent-soft: #19333a; --danger: #f07a63; --field: #0f1619;
+  --line: #2a373c; --accent: #5cc1c8; --accent-soft: #19333a; --danger: #f07a63; --warn: #e3a64a; --field: #0f1619;
   color-scheme: dark;
 }
 
@@ -372,3 +373,36 @@ button, input, select { font: inherit; color: inherit; }
   box-shadow: 0 0 0 3px var(--day), 0 4px 12px rgba(0,0,0,.35);
 }
 .selectable.is-selected .chip { background: var(--field); }
+
+/* ---------- Online-Sync ---------- */
+.sync-btn.is-ok { color: var(--accent); border-color: var(--accent); }
+.sync-btn.is-warn { color: var(--warn); border-color: var(--warn); }
+.sync-btn.is-bad { color: var(--danger); border-color: var(--danger); }
+.sync-dialog {
+  width: min(440px, calc(100vw - 2 * var(--gutter))); max-height: calc(100dvh - 2 * var(--gutter));
+  padding: 16px; border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--panel); color: var(--ink); box-shadow: 0 12px 40px rgba(0,0,0,.25);
+}
+.sync-dialog::backdrop { background: rgba(8, 12, 14, .5); }
+.sync-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+.sync-body { display: grid; gap: 12px; }
+.sync-body p { margin: 0; }
+.sync-text { color: var(--ink); }
+.sync-meta { font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
+.sync-mono { font-family: var(--font-mono); font-size: 12px; }
+.sync-sub { font: 700 14px var(--font-display); margin: 4px 0 0; }
+.sync-form { display: grid; gap: 10px; }
+.sync-form label.text-field { display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
+.sync-form input {
+  border: 1px solid var(--line); border-radius: 7px; padding: 7px 9px;
+  background: var(--field); color: var(--ink); font-size: 16px; /* 16px: kein Auto-Zoom auf dem iPhone */
+}
+.sync-box { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--accent); border-radius: var(--radius); background: var(--field); }
+.sync-box.is-bad { border-color: var(--danger); }
+.sync-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.sync-list li {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--field);
+}
+.sync-list li > span { display: grid; min-width: 0; overflow-wrap: anywhere; }
+.sync-foot { justify-content: flex-end; }

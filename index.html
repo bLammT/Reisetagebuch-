@@ -37,6 +37,7 @@
           </label>
           <button class="btn ghost" data-action="sample">Beispiel laden</button>
           <button class="btn ghost danger" data-action="clear-all">Neu anfangen</button>
+          <button id="sync-btn" class="btn ghost sync-btn" data-action="open-sync">Online-Sync</button>
         </div>
       </header>
 
@@ -73,7 +74,16 @@
     <button class="btn" data-action="close-photo">Schließen</button>
   </div>
 
+  <dialog id="sync-dialog" class="sync-dialog" aria-labelledby="sync-title">
+    <div class="sync-head">
+      <h2 id="sync-title" class="editor-title">Online-Sync</h2>
+      <button class="icon-btn" data-action="close-sync" aria-label="Schließen" title="Schließen">×</button>
+    </div>
+    <div id="sync-body" class="sync-body"></div>
+  </dialog>
+
   <script src="vendor/leaflet/leaflet.js"></script>
+  <script src="vendor/pocketbase/pocketbase.umd.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
