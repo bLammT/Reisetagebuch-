@@ -241,7 +241,9 @@ button, input, select { font: inherit; color: inherit; }
   box-shadow: 0 6px 20px rgba(0,0,0,.25); font-size: 14px;
 }
 .pick-banner .btn { background: #fff; color: var(--transfer); border-color: #fff; }
-.map-tools { position: absolute; z-index: 900; top: 12px; right: 12px; display: flex; gap: 6px; }
+.map-tools { position: absolute; z-index: 900; top: 12px; right: 12px; left: 64px; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; pointer-events: none; }
+.map-tools > * { pointer-events: auto; }
+.map-btn.is-active { background: #dcecec; border-color: #0c6b73; color: #0c6b73; }
 .map-btn { background: #fff; color: #18242b; border-color: #c9d1cf; box-shadow: 0 1px 4px rgba(0,0,0,.15); }
 .legend {
   position: absolute; z-index: 900; left: 12px; bottom: 28px;
@@ -288,7 +290,7 @@ button, input, select { font: inherit; color: inherit; }
   .panel { border-right: 0; border-top: 1px solid var(--line); }
   .panel-head { position: static; }
   .legend { display: none; }
-  .map-tools { top: auto; bottom: 12px; right: 12px; }
+  .map-tools { top: auto; bottom: 20px; right: 8px; left: 8px; }
 }
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
@@ -296,6 +298,7 @@ button, input, select { font: inherit; color: inherit; }
 .transit-btn { justify-self: start; margin-top: 4px; padding-left: 0; }
 .lg-train { border-top: 4px dashed #6b7b80; }
 .lg-flight { border-top: 3px dotted #6b7b80; }
+.lg-ferry { border-top: 3px dashed #6b7b80; border-top-style: dashed; width: 22px; opacity: .8; }
 
 /* ---------- Tagebuch ---------- */
 .journal { border-top: 1px dashed var(--line); padding-top: 10px; }
@@ -406,3 +409,57 @@ button, input, select { font: inherit; color: inherit; }
 }
 .sync-list li > span { display: grid; min-width: 0; overflow-wrap: anywhere; }
 .sync-foot { justify-content: flex-end; }
+
+/* ---------- Tage einfügen und verschieben ---------- */
+.day-gap { position: relative; height: 0; z-index: 1; }
+.gap-btn {
+  position: absolute; left: 50%; top: 0; transform: translate(-50%, -50%);
+  border: 1px dashed var(--line); background: var(--panel); color: var(--accent);
+  border-radius: 999px; padding: 2px 10px; font-size: 12px; font-weight: 500; cursor: pointer;
+  opacity: 0; transition: opacity .15s;
+}
+.day-gap:first-child .gap-btn { top: 12px; transform: translateX(-50%); }
+.days:hover .gap-btn, .gap-btn:focus-visible { opacity: 1; }
+.gap-btn:hover { border-color: var(--accent); background: var(--accent-soft); }
+@media (hover: none) { .gap-btn { opacity: 1; } }
+.day-gap:first-child + .day { padding-top: 40px; }
+.drag-handle {
+  border: 0; background: none; color: var(--muted); cursor: grab; touch-action: none;
+  font-size: 18px; line-height: 1; padding: 4px 2px; margin-left: -6px; border-radius: 6px; flex: none;
+}
+.drag-handle:hover { background: var(--accent-soft); color: var(--accent); }
+body.is-dragging-day, body.is-dragging-day * { cursor: grabbing !important; user-select: none; }
+.day.is-dragging { opacity: .45; }
+.day.drop-before { box-shadow: inset 0 3px 0 var(--accent); }
+.day.drop-after { box-shadow: inset 0 -3px 0 var(--accent); }
+
+/* ---------- Mehrere Nächte ---------- */
+.nights-row { display: flex; align-items: center; gap: 8px; margin: 6px 0 0; font-size: 13px; color: var(--muted); }
+.nights-row.nights-more strong { color: var(--ink); font-weight: 600; }
+.step-btn {
+  width: 28px; height: 28px; border-radius: 7px; border: 1px solid var(--line); background: var(--field);
+  color: var(--ink); font-size: 16px; line-height: 1; cursor: pointer;
+}
+.step-btn:hover:not(:disabled) { border-color: var(--accent); }
+.step-btn:disabled { opacity: .4; cursor: default; }
+.nights-n { font: 600 15px var(--font-mono); color: var(--ink); min-width: 1.5em; text-align: center; font-variant-numeric: tabular-nums; }
+.nights-range { font: 12px var(--font-mono); }
+
+/* ---------- Nacht unterwegs ---------- */
+.journey { display: grid; gap: 8px; }
+.journey .place.selectable { border-radius: 8px; }
+.journey .place.is-selected { background: var(--accent-soft); border-color: var(--accent); }
+.journey-fields { display: grid; gap: 8px; padding-left: 10px; border-left: 2px solid var(--line); }
+.journey-fields .seg { margin-bottom: 0; }
+
+/* ---------- Links im Tagebuch ---------- */
+.entry-links { display: flex; flex-wrap: wrap; gap: 6px; }
+.link-chip {
+  font-size: 13px; font-weight: 500; color: var(--accent); text-decoration: none;
+  border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; background: var(--field);
+}
+.link-chip:hover { border-color: var(--accent); background: var(--accent-soft); }
+.link-list { list-style: none; margin: 0 0 6px; padding: 0; display: grid; gap: 4px; }
+.link-list li { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 14px; }
+.link-list a { color: var(--accent); font-weight: 600; flex: none; }
+.link-url { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 12px; }
