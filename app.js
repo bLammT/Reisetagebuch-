@@ -23,7 +23,7 @@
  *           mit Online-Sync zusätzlich auf dem Server (Tabelle photos, Schlüssel = photoId).
  */
 
-const APP_VERSION = '2026-10-24';
+const APP_VERSION = '2026-10-24.2';
 const STORAGE_KEY = 'reisekarte.trip.v1';
 const ROUTE_CACHE_KEY = 'reisekarte.routes.v1';
 
@@ -181,7 +181,13 @@ const ui = {
   mapPick: null, // key des Ortes, der per Kartenklick gesetzt wird
   jdraft: null, // Tagebucheintrag in Bearbeitung: { dayId, entryId|null, data, added, removed, error, busy, locating }
   openNight: null, // Nacht nach dem letzten Tag, die gerade eingetragen wird
+  journeyOpen: new Set(), // Nächte unterwegs, deren Felder trotz vollständiger Angaben offen sind
+  collapsed: new Set(loadJSON('reisekarte.collapsed.v1', [])), // eingeklappte Tage (nur auf diesem Gerät)
 };
+function saveCollapsed() {
+  ui.collapsed.forEach((id) => { if (!dayById(id)) ui.collapsed.delete(id); }); // gelöschte Tage vergessen
+  saveJSON('reisekarte.collapsed.v1', [...ui.collapsed]);
+}
 
 // Online-Sync (siehe Abschnitt weiter unten). Gespeichert wird nur die Verknüpfung, die Anmeldung hält das PocketBase-SDK.
 const SYNC_KEY = 'reisekarte.sync.v1';
@@ -364,6 +370,7 @@ async function pumpRoutes() {
     }
     routePending.delete(job.key);
     persistRoutes();
+    updateRetryBtn();
     scheduleRedraw();
     await sleep(350);
   }
@@ -1098,12 +1105,12 @@ function addDraftLink() {
 function journalHTML(d) {
   const jd = ui.jdraft && ui.jdraft.dayId === d.id ? ui.jdraft : null;
   const entries = entriesOf(d.id);
+  if (!entries.length && !jd) return '';
   return `<div class="journal">
     <div class="field-label">Tagebuch</div>
     <div class="entries">
       ${entries.map((e) => (jd && jd.entryId === e.id ? entryEditorHTML() : entryHTML(e))).join('')}
       ${jd && !jd.entryId ? entryEditorHTML() : ''}
-      ${jd ? '' : `<button class="add-btn" data-action="add-entry" data-day="${d.id}">+ Tagebucheintrag</button>`}
     </div>
   </div>`;
 }
@@ -1120,8 +1127,7 @@ function stayRunAt(k) {
 function nightsHTML(k) {
   const n = stayRunAt(k);
   const id = nightId(k);
-  if (!n) return `<p class="nights-row nights-more">Weitere Nacht in <strong>${esc(nightAt(k).night.name)}</strong></p>`;
-  if (k < 0) return '';
+  if (!n || k < 0) return '';
   return `<div class="nights-row">
     <span>Nächte hier</span>
     <button class="step-btn" data-action="nights-less" data-night="${id}" ${n <= 1 ? 'disabled' : ''} aria-label="Eine Nacht weniger">−</button>
@@ -1138,21 +1144,23 @@ function journeyHTML(k) {
   const jr = journeyFor(k);
   const start = k >= 0 ? morningPlace(k) : null;
   const key = `journey:${id}`;
+  const open = !jr || ui.journeyOpen.has(id);
   return `<div class="journey">
     <div class="place selectable${ui.sel === key ? ' is-selected' : ''}" data-action="select" data-sel="${key}" data-day="${state.days[Math.max(k, 0)].id}" role="button" tabindex="0">
       <div class="place-text">
         <span class="place-name">Unterwegs · ${PROFILES[j.mode].label}</span>
         <span class="place-label">${jr ? `${esc(jr.from.name)} → ${esc(jr.to.name)} · <span data-stat="journey:${id}"></span>` : 'Trag ein, wohin es geht'}</span>
       </div>
-      <button class="link-btn" data-action="toggle-transit" data-night="${id}">Unterkunft eintragen</button>
+      ${jr ? `<button class="link-btn" data-action="edit-journey" data-night="${id}" aria-expanded="${open}">${open ? 'Fertig' : 'Ändern'}</button>` : ''}
     </div>
-    <div class="journey-fields">
+    ${open ? `<div class="journey-fields">
       <div class="seg" role="radiogroup" aria-label="Verkehrsmittel">
         ${JOURNEY_MODES.map((m) => `<label><input type="radio" name="jmode-${id}" data-journey-mode="${id}" value="${m}" ${j.mode === m ? 'checked' : ''}>${PROFILES[m].label}</label>`).join('')}
       </div>
       <div><div class="field-label">Von</div>${pickerHTML(`jfrom:${id}`, j.from, start ? `Abfahrt (leer: ${start.name})` : 'Abfahrtsort suchen')}</div>
       <div><div class="field-label">Nach</div>${pickerHTML(`jto:${id}`, j.to, 'Ankunftsort suchen')}</div>
-    </div>
+      <button class="link-btn transit-btn" data-action="toggle-transit" data-night="${id}">Doch eine Unterkunft eintragen</button>
+    </div>` : ''}
   </div>`;
 }
 
@@ -1163,6 +1171,19 @@ function nightHTML(k) {
   const edge = k < 0 || k === state.days.length - 1; // vor dem ersten / nach dem letzten Tag: optional
   const pk = `night:${id}`;
   let body;
+  if (n.night && !picker(pk).editing && !stayRunAt(k) && k >= 0) {
+    // Weitere Nacht am selben Ort: eine Zeile reicht.
+    const sel = ui.sel === `stay:${id}`;
+    return `<section class="night is-cont" id="night-${id}">
+      <div class="night-head selectable${sel ? ' is-selected' : ''}" data-action="select" data-sel="stay:${id}" data-day="${state.days[k].id}" role="button" tabindex="0">
+        <span class="night-ico" aria-hidden="true">☾</span>
+        <span class="night-n">Nacht ${nightNo(k)}</span>
+        <span class="night-cont" title="${fmtDate(k)} → ${fmtDate(k + 1)}">weiter in <strong>${esc(n.night.name)}</strong></span>
+        <button class="link-btn" data-action="edit-place" data-key="${pk}">Ändern</button>
+        ${edge ? `<button class="icon-btn" data-action="remove-night" data-night="${id}" aria-label="Übernachtung entfernen" title="Übernachtung entfernen">×</button>` : ''}
+      </div>
+    </section>`;
+  }
   if (n.transit) {
     body = journeyHTML(k);
   } else if (n.night && !picker(pk).editing) {
@@ -1181,39 +1202,58 @@ function nightHTML(k) {
   </section>`;
 }
 
-// Platz für eine optionale Nacht am Anfang oder Ende: als Karte, wenn eingetragen, sonst als Knopf.
+// Optionale Nacht am Anfang oder Ende: als Karte, wenn eingetragen, sonst als kleiner Knopf.
+const edgeNightShown = (k) => (k < 0 ? Boolean(nightAt(k)) : hasNight(nightAt(k)) || ui.openNight === nightId(k));
 function edgeNightHTML(k) {
-  const n = nightAt(k);
-  if (k < 0 ? n : hasNight(n) || ui.openNight === nightId(k)) return nightHTML(k);
-  return `<div class="night-add"><button class="add-btn" data-action="add-night" data-night="${k < 0 ? PRE : nightId(k)}">☾ Übernachtung ${k < 0 ? 'vor dem ersten Tag' : 'nach dem letzten Tag'}</button></div>`;
+  return edgeNightShown(k) ? nightHTML(k) : '';
+}
+function edgeRowHTML(top) {
+  const k = top ? -1 : state.days.length - 1;
+  const night = edgeNightShown(k) ? '' : `<button class="edge-btn" data-action="add-night" data-night="${top ? PRE : nightId(k)}">☾ Übernachtung ${top ? 'davor' : 'danach'}</button>`;
+  const day = top ? '<button class="edge-btn" data-action="insert-day" data-at="0" title="Die übrigen Tage behalten ihr Datum, die Anreise wird einen Tag früher.">+ Tag am Anfang</button>' : '';
+  return night || day ? `<div class="edge-row${top ? ' is-top' : ''}">${day}${night}</div>` : '';
 }
 
 function gapHTML(at) {
-  return `<div class="day-gap"><button class="gap-btn" data-action="insert-day" data-at="${at}"${at === 0 ? ' title="Die übrigen Tage behalten ihr Datum, die Anreise wird einen Tag früher."' : ''}>+ Tag ${at === 0 ? 'am Anfang' : 'einfügen'}</button></div>`;
+  return `<div class="day-gap"><button class="gap-btn" data-action="insert-day" data-at="${at}" aria-label="Tag einfügen">+ Tag<span class="gap-long"> einfügen</span></button></div>`;
+}
+
+// Eingeklappter Tag: Trips und Tagebuch als eine Zeile.
+function daySummaryHTML(d, i) {
+  const parts = d.trips.map((ex) => esc(tripTitle(i, ex)));
+  const n = entriesOf(d.id).length;
+  if (n) parts.push(`✎ ${n} ${n === 1 ? 'Eintrag' : 'Einträge'}`);
+  return `<p class="day-summary">${parts.join(' · ') || 'Noch nichts geplant'}</p>`;
 }
 
 function dayHTML(d, i) {
   const focused = ui.focusDay === d.id;
   const draftHere = ui.draft && ui.draft.dayId === d.id;
+  const jdHere = ui.jdraft && ui.jdraft.dayId === d.id;
+  const collapsed = ui.collapsed.has(d.id) && !draftHere && !jdHere;
   const t = transferFor(i);
   const isToday = i === todayIndex();
-  return `<section id="day-${d.id}" class="day${focused ? ' is-focused' : ''}" style="--day:${dayColor(i)}">
+  return `<section id="day-${d.id}" class="day${focused ? ' is-focused' : ''}${collapsed ? ' is-collapsed' : ''}" style="--day:${dayColor(i)}">
     <div class="day-head">
       <button class="drag-handle" data-drag="${d.id}" aria-label="Tag ${i + 1} verschieben (Pfeiltasten hoch/runter)" title="Ziehen, um den Tag zu verschieben">⠿</button>
       <button class="day-toggle" data-action="focus-day" data-day="${d.id}" aria-pressed="${focused}" title="Auf der Karte hervorheben">
         <span class="day-n">Tag ${i + 1}</span><span class="day-date">${fmtDate(i)}</span>${isToday ? '<span class="chip today-chip">Heute</span>' : ''}
       </button>
       <span class="day-stat" data-stat="day:${d.id}"></span>
+      <button class="icon-btn fold-btn" data-action="toggle-day" data-day="${d.id}" aria-expanded="${!collapsed}" aria-label="Tag ${i + 1} ${collapsed ? 'ausklappen' : 'einklappen'}" title="${collapsed ? 'Ausklappen' : 'Einklappen'}">${collapsed ? '▸' : '▾'}</button>
       <button class="icon-btn" data-action="remove-day" data-day="${d.id}" aria-label="Tag ${i + 1} löschen" title="Tag löschen">×</button>
     </div>
-    ${i === 0 && !morningPlace(0) ? '<p class="day-morning">Anreisetag</p>' : ''}
+    ${collapsed ? daySummaryHTML(d, i) : `
     ${t ? `<p class="day-morning selectable transfer-row${ui.sel === `transfer:${d.id}` ? ' is-selected' : ''}" data-action="select" data-sel="transfer:${d.id}" data-day="${d.id}" role="button" tabindex="0">Ortswechsel nach <strong>${esc(t.to.name)}</strong> · <span data-stat="transfer:${d.id}"></span></p>` : ''}
-    <div class="ex-list">
+    ${d.trips.length || draftHere ? `<div class="ex-list">
       ${d.trips.map((ex) => (draftHere && ui.draft.exId === ex.id ? editorHTML(d, i) : exHTML(d, i, ex))).join('')}
       ${draftHere && !ui.draft.exId ? editorHTML(d, i) : ''}
-      ${draftHere ? '' : `<button class="add-btn" data-action="add-ex" data-day="${d.id}">+ Ausflug oder Weiterreise</button>`}
-    </div>
+    </div>` : ''}
     ${journalHTML(d)}
+    ${draftHere && jdHere ? '' : `<div class="day-actions">
+      ${draftHere ? '' : `<button class="act-btn" data-action="add-ex" data-day="${d.id}">+ Ausflug / Weiterreise</button>`}
+      ${jdHere ? '' : `<button class="act-btn" data-action="add-entry" data-day="${d.id}">+ Tagebuch</button>`}
+    </div>`}`}
   </section>`;
 }
 
@@ -1222,8 +1262,8 @@ function render() {
   if (document.activeElement !== title) title.value = state.title;
   $('#start-date').value = state.startDate;
   const last = state.days.length - 1;
-  $('#days').innerHTML = gapHTML(0) + edgeNightHTML(-1) + state.days.map((d, i) => dayHTML(d, i)
-    + (i < last ? nightHTML(i) + gapHTML(i + 1) : edgeNightHTML(i))).join('');
+  $('#days').innerHTML = edgeRowHTML(true) + edgeNightHTML(-1) + state.days.map((d, i) => dayHTML(d, i)
+    + (i < last ? nightHTML(i) + gapHTML(i + 1) : edgeNightHTML(i))).join('') + edgeRowHTML(false);
 
   const nights = state.days.filter(hasNight).length + (hasNight(state.preNight) ? 1 : 0);
   const stays = stayPins().length;
@@ -1235,6 +1275,11 @@ function render() {
   $('#map').classList.toggle('is-picking', Boolean(ui.mapPick));
   updateStats();
   hydratePhotos($('#days'));
+  updateRetryBtn();
+}
+// „Routen neu laden“ nur zeigen, wenn eine Route fehlgeschlagen ist.
+function updateRetryBtn() {
+  $('#retry-btn').hidden = !Object.values(routeCache).some((r) => r.failed);
 }
 
 function scrollToDay(id) {
@@ -1949,6 +1994,7 @@ const actions = {
     const i = todayIndex();
     if (i < 0) return;
     const id = state.days[i].id;
+    if (ui.collapsed.delete(id)) saveCollapsed();
     ui.focusDay = id; ui.sel = null;
     render(); drawMap(true);
     scrollToDay(id);
@@ -1980,7 +2026,7 @@ const actions = {
     } catch (err) {
       alert(`Export fehlgeschlagen: ${err.message}`);
     } finally {
-      btn.disabled = false; btn.textContent = 'Exportieren';
+      btn.disabled = false; btn.textContent = 'Exportieren (Sicherung mit Fotos)';
     }
   },
   sample() {
@@ -1998,6 +2044,19 @@ const actions = {
     save(); render(); drawMap(true);
   },
   'open-sync'() { openSync(); },
+  'toggle-menu'() { setMenu($('#trip-menu').hidden); },
+  'toggle-day'(el) {
+    const id = el.dataset.day;
+    if (ui.collapsed.has(id)) ui.collapsed.delete(id); else ui.collapsed.add(id);
+    saveCollapsed(); render();
+  },
+  'collapse-all'() { state.days.forEach((d) => ui.collapsed.add(d.id)); saveCollapsed(); render(); },
+  'expand-all'() { ui.collapsed.clear(); saveCollapsed(); render(); },
+  'edit-journey'(el) {
+    const id = el.dataset.night;
+    if (ui.journeyOpen.has(id)) ui.journeyOpen.delete(id); else ui.journeyOpen.add(id);
+    render();
+  },
   'close-sync'() { $('#sync-dialog').close(); },
   'sync-set-server'(form) {
     let url;
@@ -2104,11 +2163,21 @@ const actions = {
   },
 };
 
+function setMenu(open) {
+  $('#trip-menu').hidden = !open;
+  $('#menu-btn').setAttribute('aria-expanded', String(open));
+  if (open) $('#trip-menu .menu-item')?.focus();
+}
+
 document.addEventListener('click', (e) => {
   if (e.target.closest('a[href]')) return; // Links normal öffnen, auch innerhalb anklickbarer Einträge
+  // Menü schließen bei Klick daneben oder auf einen Menüpunkt (außer „Importieren“, das öffnet den Dateidialog).
+  if (!$('#trip-menu').hidden && (!e.target.closest('.menu-wrap') || e.target.closest('button.menu-item'))) setMenu(false);
   const el = e.target.closest('[data-action]');
   if (!el || !actions[el.dataset.action]) return;
   e.preventDefault();
+  // Ausgewähltes oder bearbeitetes Element in einem eingeklappten Tag: Tag aufklappen.
+  if (['add-ex', 'add-entry'].includes(el.dataset.action)) ui.collapsed.delete(el.dataset.day);
   actions[el.dataset.action](el);
 });
 
@@ -2154,6 +2223,7 @@ document.addEventListener('change', (e) => {
     t.value = '';
     addPhotos(files);
   } else if (t.id === 'import-file' && t.files[0]) {
+    setMenu(false);
     importFile(t.files[0]).finally(() => { t.value = ''; });
   }
 });
@@ -2201,6 +2271,9 @@ document.addEventListener('keydown', (e) => {
   } else if (e.key === 'Enter' && e.target.dataset?.picker) {
     e.preventDefault();
     searchPlace(e.target.dataset.picker);
+  } else if (e.key === 'Escape' && !$('#trip-menu').hidden) {
+    setMenu(false);
+    $('#menu-btn').focus();
   } else if (e.key === 'Escape' && !$('#lightbox').hidden) {
     actions['close-photo']();
   } else if (e.key === 'Escape' && ui.mapPick) {
@@ -2213,6 +2286,7 @@ document.addEventListener('keydown', (e) => {
 // Auf der Karte angeklickt: auswählen und in der Liste dorthin scrollen.
 function selectFromMap(key, dayId) {
   ui.sel = key; ui.focusDay = dayId;
+  if (ui.collapsed.delete(dayId)) saveCollapsed();
   render(); drawMap(false);
   if (selMarkerNow) selMarkerNow.openPopup();
   const el = document.querySelector(`#days [data-sel="${CSS.escape(key)}"]`) || document.getElementById(`day-${dayId}`);

@@ -492,3 +492,62 @@ body.is-dragging-day, body.is-dragging-day * { cursor: grabbing !important; user
 .night-head .icon-btn { align-self: center; }
 .night-add { padding: 0 var(--gutter); margin-bottom: 10px; }
 .night .transit-btn { margin-top: 0; }
+
+/* ---------- Kopfbereich kompakt ---------- */
+.panel-head { gap: 8px; padding-top: 12px; padding-bottom: 12px; }
+.head-row { display: flex; align-items: center; gap: 8px; }
+.head-row .brand { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.head-actions { display: flex; align-items: center; gap: 6px; flex: none; }
+.trip-title { font-size: 22px; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.menu-wrap { position: relative; }
+.menu-btn { font-size: 16px; line-height: 1; padding: 4px 10px; letter-spacing: .05em; }
+.menu {
+  position: absolute; right: 0; top: calc(100% + 6px); z-index: 1500; min-width: 250px;
+  display: grid; padding: 6px; border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--panel); box-shadow: 0 10px 30px rgba(0,0,0,.2);
+}
+.menu hr { border: 0; border-top: 1px solid var(--line); margin: 4px 2px; width: auto; }
+.menu-item {
+  display: block; width: 100%; text-align: left; border: 0; background: none; color: var(--ink);
+  padding: 8px 10px; border-radius: 6px; font-size: 14px; cursor: pointer;
+}
+.menu-item:hover, .menu-item:focus-visible { background: var(--accent-soft); }
+.menu-item.danger { color: var(--danger); }
+label.menu-item { position: relative; overflow: hidden; }
+
+/* ---------- Tage kompakter ---------- */
+.day-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.act-btn {
+  border: 1px dashed var(--line); background: transparent; border-radius: 999px;
+  padding: 5px 12px; cursor: pointer; color: var(--accent); font-weight: 500; font-size: 13px;
+}
+.act-btn:hover, .act-btn:focus-visible { border-color: var(--accent); background: var(--accent-soft); }
+.fold-btn { font-size: 14px; color: var(--muted); }
+.fold-btn:hover { color: var(--accent); }
+.day.is-collapsed { padding-bottom: 12px; gap: 4px; }
+.day-summary { margin: 0 0 0 22px; font-size: 13px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Weitere Nacht am selben Ort: nur eine Zeile */
+.night.is-cont { padding: 6px 8px; background: transparent; border-style: dashed; }
+.night.is-cont .night-head { flex-wrap: wrap; align-items: center; padding: 2px 4px; border-radius: 6px; }
+.night.is-cont .night-date { flex: none; }
+.night-cont { flex: 1; min-width: 0; font-size: 13px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.night-cont strong { color: var(--ink); font-weight: 600; }
+.night.is-cont .night-head.is-selected { background: var(--accent-soft); box-shadow: none; }
+
+/* Anfang/Ende: kleine Knöpfe statt großer Kästen */
+.edge-row { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; padding: 10px var(--gutter); }
+.edge-row.is-top { padding-bottom: 4px; }
+.edge-btn {
+  border: 1px dashed var(--line); background: var(--panel); color: var(--accent);
+  border-radius: 999px; padding: 3px 12px; font-size: 12px; font-weight: 500; cursor: pointer;
+}
+.edge-btn:hover, .edge-btn:focus-visible { border-color: var(--accent); background: var(--accent-soft); }
+@media (hover: none) {
+  .gap-btn { opacity: .75; padding: 1px 8px; font-size: 11px; }
+  .gap-long { display: none; }
+}
+@media (max-width: 800px) {
+  .trip-meta { gap: 6px 10px; }
+}

@@ -15,30 +15,41 @@
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
   <link rel="stylesheet" href="vendor/leaflet/leaflet.css">
   <!-- ?v= bei jeder neuen Version erhöhen (wie APP_VERSION in app.js), damit kein Browser die alte Datei weiterverwendet. -->
-  <link rel="stylesheet" href="styles.css?v=2026-10-24">
+  <link rel="stylesheet" href="styles.css?v=2026-10-24.2">
 </head>
 <body>
   <div class="app">
     <aside class="panel" aria-label="Reiseplan">
       <header class="panel-head">
-        <div class="brand">Reisekarte <span id="app-version" class="app-version"></span></div>
+        <div class="head-row">
+          <div class="brand">Reisekarte <span id="app-version" class="app-version"></span></div>
+          <div class="head-actions">
+            <button id="today-btn" class="btn primary" data-action="today" hidden>Heute</button>
+            <button id="sync-btn" class="btn ghost sync-btn" data-action="open-sync">Online-Sync</button>
+            <div class="menu-wrap">
+              <button id="menu-btn" class="btn ghost menu-btn" data-action="toggle-menu" aria-haspopup="true" aria-expanded="false" aria-controls="trip-menu" title="Weitere Aktionen">⋯<span class="sr-only">Weitere Aktionen</span></button>
+              <div id="trip-menu" class="menu" role="menu" hidden>
+                <button class="menu-item" role="menuitem" data-action="collapse-all">Alle Tage einklappen</button>
+                <button class="menu-item" role="menuitem" data-action="expand-all">Alle Tage ausklappen</button>
+                <hr>
+                <button class="menu-item" role="menuitem" data-action="export">Exportieren (Sicherung mit Fotos)</button>
+                <label class="menu-item file-btn" role="menuitem">Importieren …
+                  <input id="import-file" type="file" accept="application/json,.json">
+                </label>
+                <hr>
+                <button class="menu-item" role="menuitem" data-action="sample">Beispielreise laden</button>
+                <button class="menu-item danger" role="menuitem" data-action="clear-all">Neu anfangen</button>
+              </div>
+            </div>
+          </div>
+        </div>
         <input id="trip-title" class="trip-title" type="text" aria-label="Name der Reise" placeholder="Name der Reise">
         <div class="trip-meta">
           <label class="date-field">Anreise
             <input id="start-date" type="date">
           </label>
           <span id="trip-summary" class="trip-summary"></span>
-          <button id="today-btn" class="btn primary" data-action="today" hidden>Heute</button>
           <button id="map-toggle" class="btn ghost mobile-only" data-action="toggle-map">Karte ausblenden</button>
-        </div>
-        <div class="toolbar">
-          <button class="btn ghost" data-action="export">Exportieren</button>
-          <label class="btn ghost file-btn">Importieren
-            <input id="import-file" type="file" accept="application/json,.json">
-          </label>
-          <button class="btn ghost" data-action="sample">Beispiel laden</button>
-          <button class="btn ghost danger" data-action="clear-all">Neu anfangen</button>
-          <button id="sync-btn" class="btn ghost sync-btn" data-action="open-sync">Online-Sync</button>
         </div>
       </header>
 
@@ -57,7 +68,7 @@
       </div>
       <div class="map-tools">
         <button class="btn map-btn" data-action="fit-all">Ganze Reise</button>
-        <button class="btn map-btn" data-action="retry-routes" title="Fehlgeschlagene Routen erneut abfragen">Routen neu laden</button>
+        <button id="retry-btn" class="btn map-btn" data-action="retry-routes" hidden title="Fehlgeschlagene Routen erneut abfragen">Routen neu laden</button>
         <button id="follow-btn" class="btn map-btn" data-action="toggle-follow" aria-pressed="true" title="Beim Scrollen der Liste zeigt die Karte den Tag, den du gerade siehst">Folgt der Liste</button>
       </div>
       <div class="legend" aria-label="Legende">
@@ -87,6 +98,6 @@
 
   <script src="vendor/leaflet/leaflet.js"></script>
   <script src="vendor/pocketbase/pocketbase.umd.js"></script>
-  <script src="app.js?v=2026-10-24"></script>
+  <script src="app.js?v=2026-10-24.2"></script>
 </body>
 </html>
