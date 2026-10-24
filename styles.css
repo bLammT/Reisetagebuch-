@@ -51,7 +51,7 @@ button, input, select { font: inherit; color: inherit; }
 
 .app {
   display: grid;
-  grid-template-columns: minmax(340px, 420px) 1fr;
+  grid-template-columns: var(--panel-w, minmax(340px, 420px)) auto 1fr;
   height: 100%;
 }
 
@@ -296,8 +296,9 @@ button, input, select { font: inherit; color: inherit; }
 
 /* ---------- Handy ---------- */
 @media (max-width: 800px) {
-  .app { grid-template-columns: 1fr; grid-template-rows: 46% 1fr; }
-  .map-wrap { order: -1; }
+  .app { grid-template-columns: 1fr; grid-template-rows: var(--map-h, 46%) auto 1fr; }
+  .map-wrap { order: -2; }
+  .resizer { order: -1; }
   .panel { border-right: 0; border-top: 1px solid var(--line); }
   .panel-head { position: static; }
   .legend { display: none; }
@@ -364,6 +365,7 @@ button, input, select { font: inherit; color: inherit; }
 @media (max-width: 800px) {
   .mobile-only { display: inline-block; }
   .app.map-hidden { grid-template-rows: 0 1fr; }
+  .app.map-hidden .resizer { display: none; }
   .app.map-hidden .map-wrap { visibility: hidden; }
 }
 
@@ -550,4 +552,22 @@ label.menu-item { position: relative; overflow: hidden; }
 }
 @media (max-width: 800px) {
   .trip-meta { gap: 6px 10px; }
+}
+
+/* ---------- Trennlinie zwischen Liste und Karte ---------- */
+.resizer {
+  position: relative; z-index: 1001; width: 8px; margin: 0 -4px; cursor: col-resize; touch-action: none;
+  background: transparent;
+}
+.resizer::after {
+  content: ""; position: absolute; top: 0; bottom: 0; left: 3px; width: 2px; background: transparent; transition: background .15s;
+}
+.resizer:hover::after, .resizer:focus-visible::after, .resizer.is-active::after { background: var(--accent); }
+.resizer:focus-visible { outline: none; }
+body.is-resizing, body.is-resizing * { user-select: none; cursor: col-resize !important; }
+body.is-resizing #map { pointer-events: none; }
+@media (max-width: 800px) {
+  .resizer { width: auto; height: 14px; margin: -7px 0; cursor: row-resize; }
+  .resizer::after { top: 6px; bottom: auto; left: 50%; width: 44px; height: 4px; margin-left: -22px; border-radius: 2px; background: var(--line); }
+  body.is-resizing, body.is-resizing * { cursor: row-resize !important; }
 }

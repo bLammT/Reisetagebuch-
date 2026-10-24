@@ -23,7 +23,7 @@
  *           mit Online-Sync zusätzlich auf dem Server (Tabelle photos, Schlüssel = photoId).
  */
 
-const APP_VERSION = '2026-10-24.2';
+const APP_VERSION = '2026-10-24.3';
 const STORAGE_KEY = 'reisekarte.trip.v1';
 const ROUTE_CACHE_KEY = 'reisekarte.routes.v1';
 
@@ -2343,6 +2343,76 @@ actions['toggle-follow'] = () => {
   if (follow.on) followList();
 };
 
+/* ---------------------------------------------------------------- Größe Liste/Karte */
+
+// Am Desktop die Breite der Liste, am Handy (Liste unter der Karte) die Höhe der Karte. Gemerkt pro Gerät.
+const LAYOUT_KEY = 'reisekarte.layout.v1';
+const layout = { w: null, h: null, ...loadJSON(LAYOUT_KEY, {}) };
+const isStacked = () => matchMedia('(max-width: 800px)').matches;
+
+function applyLayout() {
+  const app = $('.app');
+  const r = app.getBoundingClientRect();
+  // Grenzen: Liste und Karte bleiben immer benutzbar.
+  if (layout.w && !isStacked()) layout.w = Math.round(Math.min(Math.max(layout.w, 280), r.width - 320));
+  if (layout.h && isStacked()) layout.h = Math.round(Math.min(Math.max(layout.h, 120), r.height - 200));
+  if (layout.w) app.style.setProperty('--panel-w', `${layout.w}px`); else app.style.removeProperty('--panel-w');
+  if (layout.h) app.style.setProperty('--map-h', `${layout.h}px`); else app.style.removeProperty('--map-h');
+  map.invalidateSize();
+}
+
+function setLayoutFromPointer(x, y) {
+  const r = $('.app').getBoundingClientRect();
+  if (isStacked()) layout.h = y - r.top; else layout.w = x - r.left;
+  applyLayout();
+}
+
+{
+  const handle = $('#resizer');
+  let active = null;
+  handle.addEventListener('pointerdown', (e) => {
+    if (e.button > 0) return;
+    e.preventDefault();
+    active = e.pointerId;
+    try { handle.setPointerCapture(e.pointerId); } catch { /* ohne Capture geht es auch */ }
+    handle.classList.add('is-active');
+    document.body.classList.add('is-resizing');
+  });
+  handle.addEventListener('pointermove', (e) => {
+    if (e.pointerId === active) setLayoutFromPointer(e.clientX, e.clientY);
+  });
+  const end = (e) => {
+    if (e.pointerId !== active) return;
+    active = null;
+    handle.classList.remove('is-active');
+    document.body.classList.remove('is-resizing');
+    saveJSON(LAYOUT_KEY, layout);
+  };
+  handle.addEventListener('pointerup', end);
+  handle.addEventListener('pointercancel', end);
+  handle.addEventListener('dblclick', () => {
+    layout.w = null; layout.h = null;
+    saveJSON(LAYOUT_KEY, layout); applyLayout();
+  });
+  handle.addEventListener('keydown', (e) => {
+    const step = e.shiftKey ? 80 : 24;
+    const stacked = isStacked();
+    const keys = stacked ? { ArrowUp: -step, ArrowDown: step } : { ArrowLeft: -step, ArrowRight: step };
+    if (!(e.key in keys)) return;
+    e.preventDefault();
+    if (stacked) layout.h = (layout.h || $('.map-wrap').getBoundingClientRect().height) + keys[e.key];
+    else layout.w = (layout.w || $('.panel').getBoundingClientRect().width) + keys[e.key];
+    applyLayout(); saveJSON(LAYOUT_KEY, layout);
+  });
+  window.addEventListener('resize', applyLayout);
+  handle.setAttribute('aria-orientation', isStacked() ? 'horizontal' : 'vertical');
+  matchMedia('(max-width: 800px)').addEventListener?.('change', () => {
+    handle.setAttribute('aria-orientation', isStacked() ? 'horizontal' : 'vertical');
+    applyLayout();
+  });
+  applyLayout();
+}
+
 /* ---------------------------------------------------------------- Tage verschieben */
 
 // Ziehen am Griff (Maus und Finger) oder Pfeiltasten auf dem Griff.
@@ -2401,7 +2471,7 @@ document.addEventListener('pointerdown', (e) => {
   if (!h || e.button > 0) return;
   e.preventDefault();
   drag = { from: dayIndex(h.dataset.drag), to: null, startY: e.clientY, y: e.clientY, pointerId: e.pointerId, section: h.closest('.day'), started: false };
-  h.setPointerCapture?.(e.pointerId);
+  try { h.setPointerCapture(e.pointerId); } catch { /* ohne Capture geht es auch */ }
 });
 document.addEventListener('pointermove', (e) => {
   if (!drag || e.pointerId !== drag.pointerId) return;
