@@ -15,7 +15,7 @@
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
   <link rel="stylesheet" href="vendor/leaflet/leaflet.css">
   <!-- ?v= bei jeder neuen Version erhöhen (wie APP_VERSION in app.js), damit kein Browser die alte Datei weiterverwendet. -->
-  <link rel="stylesheet" href="styles.css?v=2026-10-24.3">
+  <link rel="stylesheet" href="styles.css?v=2026-10-24.4">
 </head>
 <body>
   <div class="app">
@@ -33,12 +33,12 @@
                 <button class="menu-item" role="menuitem" data-action="expand-all">Alle Tage ausklappen</button>
                 <hr>
                 <button class="menu-item" role="menuitem" data-action="export">Exportieren (Sicherung mit Fotos)</button>
-                <label class="menu-item file-btn" role="menuitem">Importieren …
+                <label class="ro-hide menu-item file-btn" role="menuitem">Importieren …
                   <input id="import-file" type="file" accept="application/json,.json">
                 </label>
                 <hr>
-                <button class="menu-item" role="menuitem" data-action="sample">Beispielreise laden</button>
-                <button class="menu-item danger" role="menuitem" data-action="clear-all">Neu anfangen</button>
+                <button class="ro-hide menu-item" role="menuitem" data-action="sample">Beispielreise laden</button>
+                <button class="ro-hide menu-item danger" role="menuitem" data-action="clear-all">Neu anfangen</button>
               </div>
             </div>
           </div>
@@ -53,10 +53,11 @@
         </div>
       </header>
 
+      <p id="ro-banner" class="ro-banner" hidden>👁 Nur lesen: Diese Reise wurde mit dir zum Lesen geteilt.</p>
       <div id="days" class="days"></div>
 
       <div class="panel-foot">
-        <button class="add-btn add-day" data-action="add-day">+ Tag hinzufügen</button>
+        <button class="add-btn add-day ro-hide" data-action="add-day">+ Tag hinzufügen</button>
       </div>
     </aside>
 
@@ -74,6 +75,7 @@
         <button id="follow-btn" class="btn map-btn" data-action="toggle-follow" aria-pressed="true" title="Beim Scrollen der Liste zeigt die Karte den Tag, den du gerade siehst">Folgt der Liste</button>
       </div>
       <div class="legend" aria-label="Legende">
+        <button class="legend-toggle" data-action="toggle-legend" aria-expanded="true">Legende</button>
         <div class="legend-row"><span class="lg-pin">⌂</span>Unterkunft · Nächte</div>
         <div class="legend-row"><span class="lg-line lg-transfer"></span>Ortswechsel</div>
         <div class="legend-row"><span class="lg-line lg-trip"></span>Ausflug (Farbe = Tag)</div>
@@ -100,6 +102,6 @@
 
   <script src="vendor/leaflet/leaflet.js"></script>
   <script src="vendor/pocketbase/pocketbase.umd.js"></script>
-  <script src="app.js?v=2026-10-24.3"></script>
+  <script src="app.js?v=2026-10-24.4"></script>
 </body>
 </html>

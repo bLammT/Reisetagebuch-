@@ -23,7 +23,7 @@
  *           mit Online-Sync zusätzlich auf dem Server (Tabelle photos, Schlüssel = photoId).
  */
 
-const APP_VERSION = '2026-10-24.3';
+const APP_VERSION = '2026-10-24.4';
 const STORAGE_KEY = 'reisekarte.trip.v1';
 const ROUTE_CACHE_KEY = 'reisekarte.routes.v1';
 
@@ -191,7 +191,9 @@ function saveCollapsed() {
 
 // Online-Sync (siehe Abschnitt weiter unten). Gespeichert wird nur die Verknüpfung, die Anmeldung hält das PocketBase-SDK.
 const SYNC_KEY = 'reisekarte.sync.v1';
-const syncCfg = { url: '', tripId: null, tripTitle: '', remoteUpdated: null, dirty: false, ...loadJSON(SYNC_KEY, {}) };
+const syncCfg = { url: '', tripId: null, tripTitle: '', remoteUpdated: null, dirty: false, role: 'owner', ...loadJSON(SYNC_KEY, {}) };
+// Mit dir nur zum Lesen geteilt: Die App zeigt alles, ändert aber nichts.
+const readOnly = () => Boolean(syncCfg.tripId) && syncCfg.role === 'viewer';
 const sync = {
   pb: null, // PocketBase-Client, sobald eine Server-Adresse eingetragen ist
   methods: null, // Anmeldearten des Servers
@@ -1188,6 +1190,8 @@ function nightHTML(k) {
     body = journeyHTML(k);
   } else if (n.night && !picker(pk).editing) {
     body = `<div class="selectable stay-select${ui.sel === `stay:${id}` ? ' is-selected' : ''}" data-action="select" data-sel="stay:${id}" data-day="${state.days[Math.max(k, 0)].id}" role="button" tabindex="0">${pickerHTML(pk, n.night)}</div>${nightsHTML(k)}`;
+  } else if (readOnly()) {
+    body = '<p class="sync-meta">Noch nicht eingetragen</p>';
   } else {
     body = `${pickerHTML(pk, n.night, 'Unterkunft oder Ort suchen')}${n.night ? '' : `<button class="link-btn transit-btn" data-action="toggle-transit" data-night="${id}">Diese Nacht bin ich unterwegs</button>`}`;
   }
@@ -1257,13 +1261,35 @@ function dayHTML(d, i) {
   </section>`;
 }
 
+// Einstieg: Hinweise, solange die Reise noch leer ist (bis „Verstanden“).
+const HINT_KEY = 'reisekarte.hint.v1';
+function hintHTML() {
+  const empty = !state.preNight && !state.days.some((d) => hasNight(d) || d.trips.length) && !state.journal.length;
+  if (!empty || readOnly() || loadJSON(HINT_KEY, false)) return '';
+  return `<div class="hint" role="note">
+    <p class="hint-title">So planst du deine Reise</p>
+    <ol>
+      <li>Oben das <strong>Anreisedatum</strong> und den Namen der Reise eintragen.</li>
+      <li>Zwischen den Tagen die <strong>☾ Übernachtungen</strong> eintragen, mit „Nächte hier +“ gleich mehrere am selben Ort.</li>
+      <li>Pro Tag <strong>Ausflüge oder Weiterreisen</strong> mit Stopps hinzufügen.</li>
+      <li>Unterwegs ins <strong>Tagebuch</strong> schreiben, mit Fotos und Ort. Mit „Online-Sync“ ist alles auf allen Geräten.</li>
+    </ol>
+    <button class="btn" data-action="dismiss-hint">Verstanden</button>
+  </div>`;
+}
+
 function render() {
+  const ro = readOnly();
+  $('.app').classList.toggle('is-readonly', ro);
+  $('#ro-banner').hidden = !ro;
   const title = $('#trip-title');
+  title.readOnly = ro;
+  $('#start-date').disabled = ro;
   if (document.activeElement !== title) title.value = state.title;
   $('#start-date').value = state.startDate;
   const last = state.days.length - 1;
-  $('#days').innerHTML = edgeRowHTML(true) + edgeNightHTML(-1) + state.days.map((d, i) => dayHTML(d, i)
-    + (i < last ? nightHTML(i) + gapHTML(i + 1) : edgeNightHTML(i))).join('') + edgeRowHTML(false);
+  $('#days').innerHTML = hintHTML() + (ro ? '' : edgeRowHTML(true)) + edgeNightHTML(-1) + state.days.map((d, i) => dayHTML(d, i)
+    + (i < last ? nightHTML(i) + gapHTML(i + 1) : edgeNightHTML(i))).join('') + (ro ? '' : edgeRowHTML(false));
 
   const nights = state.days.filter(hasNight).length + (hasNight(state.preNight) ? 1 : 0);
   const stays = stayPins().length;
@@ -1327,7 +1353,7 @@ function connectServer() {
 }
 
 function markDirty() {
-  if (!syncCfg.tripId) return;
+  if (!syncCfg.tripId || readOnly()) return;
   sync.version++;
   if (!syncCfg.dirty) { syncCfg.dirty = true; saveSync(); }
   clearTimeout(sync.timer);
@@ -1335,12 +1361,117 @@ function markDirty() {
   renderSyncStatus();
 }
 
+// Meine Rolle in einer Online-Reise: angelegt (owner), Mitbearbeiten (member) oder nur lesen (viewer).
+function roleOf(rec) {
+  const me = sync.pb?.authStore.record?.id;
+  if (rec.owner === me) return 'owner';
+  return (rec.viewers || []).includes(me) ? 'viewer' : 'member';
+}
+function setRole(rec) {
+  const role = roleOf(rec);
+  if (role === syncCfg.role) return;
+  syncCfg.role = role;
+  saveSync();
+  share.people = null;
+  render();
+}
+
 function unlinkTrip() {
   clearTimeout(sync.timer);
-  Object.assign(syncCfg, { tripId: null, tripTitle: '', remoteUpdated: null, dirty: false });
+  Object.assign(syncCfg, { tripId: null, tripTitle: '', remoteUpdated: null, dirty: false, role: 'owner' });
   sync.conflict = null; sync.trips = null;
+  Object.assign(share, { people: null, unsupported: false, needsPassword: false, invite: null, copied: false, error: null });
   resetPhotoSync();
   saveSync();
+}
+
+/* Teilen (nur wer die Reise angelegt hat): über den Endpunkt des Add-ons ab Version 0.3.0. */
+
+const share = { people: null, unsupported: false, needsPassword: false, invite: null, copied: false, error: null, busy: false, loading: false };
+const SHARE_ROLE = { member: 'Mitbearbeiten', viewer: 'Nur lesen' };
+const APP_URL = location.origin + location.pathname;
+
+async function loadShares() {
+  if (share.loading) return;
+  share.loading = true;
+  try {
+    share.people = (await sync.pb.send(`/api/reisetagebuch/share/${syncCfg.tripId}`, {})).people;
+    share.unsupported = false;
+  } catch (err) {
+    if (err.status === 404) share.unsupported = true;
+    else share.error = syncErrorText(err);
+    share.people = [];
+  }
+  share.loading = false;
+  renderSync();
+}
+
+async function sendShare(body) {
+  share.busy = true; share.error = null;
+  renderSync();
+  try {
+    const res = await sync.pb.send('/api/reisetagebuch/share', { method: 'POST', body: { trip: syncCfg.tripId, ...body } });
+    share.needsPassword = false;
+    // Teilen ändert den Zeitstempel der Reise, nicht ihren Inhalt: neuen Stand übernehmen, sonst gäbe es einen Schein-Konflikt.
+    const rec = await sync.pb.collection('trips').getOne(syncCfg.tripId, { fields: 'id,updated' });
+    syncCfg.remoteUpdated = rec.updated;
+    saveSync();
+    await loadShares();
+    return res;
+  } catch (err) {
+    if (err.status === 404 && err.response?.code === 'no_account') share.needsPassword = true;
+    else if (err.status === 404) share.unsupported = true;
+    else share.error = syncErrorText(err);
+    return null;
+  } finally {
+    share.busy = false;
+    renderSync();
+  }
+}
+
+function inviteText(email, role, password) {
+  const link = `${APP_URL}?server=${encodeURIComponent(syncCfg.url)}`;
+  return [
+    `Ich habe die Reise „${state.title || syncCfg.tripTitle}“ mit dir geteilt (${role === 'viewer' ? 'zum Lesen' : 'zum Mitbearbeiten'}).`,
+    `1. Öffne ${link}`,
+    `2. Melde dich unter „Online-Sync“ mit ${email} an${password ? ` (Passwort: ${password})` : ''}.`,
+    '3. Unter „Online-Reisen“ die Reise öffnen.',
+  ].join('\n');
+}
+
+function shareHTML() {
+  const dis = share.busy ? ' disabled' : '';
+  if (share.unsupported) return '<p class="sync-meta">Teilen aus der App braucht das Home-Assistant-Add-on „Reisetagebuch Server“ ab Version 0.3.0.</p>';
+  const people = share.people === null
+    ? '<p class="sync-meta">Lade …</p>'
+    : share.people.length
+      ? `<ul class="sync-list share-list">${share.people.map((x) => `<li>
+          <span><strong>${esc(x.email)}</strong></span>
+          <select data-share-role="${esc(x.email)}" aria-label="Rolle von ${esc(x.email)}"${dis}>
+            ${Object.entries(SHARE_ROLE).map(([k, v]) => `<option value="${k}" ${x.role === k ? 'selected' : ''}>${v}</option>`).join('')}
+          </select>
+          <button class="icon-btn" data-action="share-remove" data-email="${esc(x.email)}" aria-label="${esc(x.email)} ausladen" title="Ausladen"${dis}>×</button>
+        </li>`).join('')}</ul>`
+      : '<p class="sync-meta">Noch mit niemandem geteilt.</p>';
+  return `${people}
+    <form class="sync-form" data-submit="share-invite">
+      <div class="share-row">
+        <input name="share-email" type="email" required autocomplete="off" placeholder="E-Mail der Person" aria-label="E-Mail der Person">
+        <select name="share-role" aria-label="Rolle">
+          ${Object.entries(SHARE_ROLE).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}
+        </select>
+      </div>
+      ${share.needsPassword ? `<label class="text-field">Für diese E-Mail gibt es noch kein Konto. Start-Passwort für das neue Konto (mind. 8 Zeichen):
+        <input name="share-password" type="text" minlength="8" required autocomplete="off">
+      </label>` : ''}
+      <div class="editor-actions"><button class="btn primary"${dis}>${share.needsPassword ? 'Konto anlegen und einladen' : 'Einladen'}</button></div>
+    </form>
+    ${share.error ? `<p class="editor-error" role="alert">${esc(share.error)}</p>` : ''}
+    ${share.invite ? `<div class="invite">
+      <p class="sync-meta">Schick der Person diesen Text:</p>
+      <textarea class="invite-text" rows="5" readonly>${esc(share.invite)}</textarea>
+      <div class="editor-actions"><button class="btn" data-action="share-copy">${share.copied ? 'Kopiert ✓' : 'Text kopieren'}</button></div>
+    </div>` : ''}`;
 }
 
 /* Fotos: Hochladen nach dem Speichern, Herunterladen bei Bedarf (wenn ein Foto auf diesem Gerät fehlt). */
@@ -1473,7 +1604,7 @@ function handleSyncError(err) {
 
 async function pushTrip() {
   clearTimeout(sync.timer);
-  if (!linked() || !syncCfg.dirty || sync.conflict) return;
+  if (!linked() || !syncCfg.dirty || sync.conflict || readOnly()) return;
   if (sync.pushing) { sync.pushAgain = true; return; }
   sync.pushing = true; sync.error = null;
   renderSyncStatus();
@@ -1511,6 +1642,7 @@ async function pullTrip() {
     const rec = await sync.pb.collection('trips').getOne(syncCfg.tripId);
     sync.offline = false; sync.error = null;
     if (rec.id !== syncCfg.tripId || sync.pushing) return;
+    setRole(rec);
     if (rec.updated === syncCfg.remoteUpdated) {
       if (syncCfg.dirty) pushTrip(); else uploadPhotos();
     } else if (syncCfg.dirty) {
@@ -1536,7 +1668,7 @@ function applyRemote(rec, fit) {
   }
   next.journal = next.journal.filter((e) => next.days.some((d) => d.id === e.dayId));
   state = next;
-  Object.assign(syncCfg, { tripId: rec.id, tripTitle: rec.title, remoteUpdated: rec.updated, dirty: false });
+  Object.assign(syncCfg, { tripId: rec.id, tripTitle: rec.title, remoteUpdated: rec.updated, dirty: false, role: roleOf(rec) });
   sync.conflict = null;
   saveSync();
   saveJSON(STORAGE_KEY, state);
@@ -1548,7 +1680,7 @@ function applyRemote(rec, fit) {
 }
 
 async function loadTripList() {
-  sync.trips = await sync.pb.collection('trips').getFullList({ sort: '-updated', fields: 'id,title,updated,owner' });
+  sync.trips = await sync.pb.collection('trips').getFullList({ sort: '-updated', fields: 'id,title,updated,owner,viewers' });
 }
 
 async function loadAuthMethods() {
@@ -1656,7 +1788,7 @@ function syncBodyHTML() {
       ? '<p class="sync-text">Lade Online-Reisen…</p>'
       : sync.trips.length
         ? `<ul class="sync-list">${sync.trips.map((t) => `
-            <li><span><strong>${esc(t.title || 'Ohne Namen')}</strong><span class="sync-meta">geändert ${esc(syncTimeFmt.format(parseServerTime(t.updated)))}${t.owner !== pb.authStore.record?.id ? ' · geteilt' : ''}</span></span>
+            <li><span><strong>${esc(t.title || 'Ohne Namen')}</strong><span class="sync-meta">geändert ${esc(syncTimeFmt.format(parseServerTime(t.updated)))}${{ owner: '', member: ' · mit dir geteilt', viewer: ' · zum Lesen geteilt' }[roleOf(t)]}</span></span>
               <button class="btn" data-action="sync-open-trip" data-trip="${esc(t.id)}"${dis}>Öffnen</button></li>`).join('')}</ul>`
         : '<p class="sync-text">Du hast noch keine Online-Reisen.</p>';
     return `${who}
@@ -1675,11 +1807,14 @@ function syncBodyHTML() {
         ? '<p class="sync-meta">Fotos werden nicht übertragen: Bitte aktualisiere das Home-Assistant-Add-on „Reisetagebuch Server“ auf Version 0.2.0 oder neuer.</p>'
         : `<p class="sync-meta">Fotos werden mit hochgeladen${photoSync.uploading && photoSync.pending ? ` · noch ${photoSync.pending}` : ''}.</p>`}
       ${photoSync.error ? `<p class="editor-error">${esc(photoSync.error)}</p>` : ''}
+      ${syncCfg.role === 'viewer' ? '<p class="sync-meta"><strong>Nur lesen:</strong> Diese Reise wurde mit dir zum Lesen geteilt.</p>' : ''}
+      ${syncCfg.role === 'member' ? '<p class="sync-meta">Diese Reise wurde mit dir zum Mitbearbeiten geteilt.</p>' : ''}
       <div class="editor-actions">
         <button class="btn primary" data-action="sync-now"${dis}>Jetzt abgleichen</button>
         <button class="btn" data-action="sync-unlink"${dis}>Andere Reise öffnen</button>
       </div>
-    </div>${err}${footer}`;
+    </div>
+    ${syncCfg.role === 'owner' ? `<div class="sync-box"><h3 class="sync-sub">Teilen</h3>${shareHTML()}</div>` : ''}${err}${footer}`;
 }
 
 function renderSync() {
@@ -1691,6 +1826,8 @@ function renderSync() {
   $('#sync-body').innerHTML = syncBodyHTML();
   dlg.querySelectorAll('input[name]').forEach((i) => { if (typed[i.name]) i.value = typed[i.name]; });
   if (focused) dlg.querySelector(`[name="${focused}"]`)?.focus();
+  // Teilen-Liste nachladen, z. B. direkt nachdem die Reise hochgeladen wurde.
+  if (linked() && syncCfg.role === 'owner' && share.people === null && !share.unsupported) loadShares();
 }
 
 function openSync() {
@@ -1699,6 +1836,7 @@ function openSync() {
   renderSync();
   if (sync.pb && !loggedIn() && !sync.methods) loadAuthMethods().then(renderSync);
   if (loggedIn() && !syncCfg.tripId && !sync.trips) runSync(loadTripList);
+  if (linked() && syncCfg.role === 'owner' && share.people === null && !share.unsupported) loadShares();
 }
 
 /* ---------------------------------------------------------------- Aktionen */
@@ -2045,6 +2183,12 @@ const actions = {
   },
   'open-sync'() { openSync(); },
   'toggle-menu'() { setMenu($('#trip-menu').hidden); },
+  'dismiss-hint'() { saveJSON(HINT_KEY, true); render(); },
+  'toggle-legend'() {
+    const open = $('.legend').classList.toggle('is-closed') === false;
+    $('.legend-toggle').setAttribute('aria-expanded', String(open));
+    saveJSON('reisekarte.legend.v1', open);
+  },
   'toggle-day'(el) {
     const id = el.dataset.day;
     if (ui.collapsed.has(id)) ui.collapsed.delete(id); else ui.collapsed.add(id);
@@ -2120,13 +2264,40 @@ const actions = {
     sync.error = null;
     renderSync(); renderSyncStatus();
   },
+  'share-invite'(form) {
+    const email = form.elements['share-email'].value.trim();
+    const role = form.elements['share-role'].value;
+    const password = form.elements['share-password']?.value || '';
+    sendShare({ email, role, ...(password ? { password } : {}) }).then((res) => {
+      if (!res) return;
+      share.invite = inviteText(email, role, res.created ? password : '');
+      share.copied = false;
+      form.reset();
+      renderSync();
+      $('#sync-dialog [name="share-email"]').value = '';
+    });
+  },
+  'share-remove'(el) {
+    if (!confirm(`${el.dataset.email} ausladen? Die Person sieht die Reise danach nicht mehr.`)) return;
+    sendShare({ email: el.dataset.email, role: 'remove' });
+  },
+  async 'share-copy'() {
+    const ta = $('#sync-dialog .invite-text');
+    try {
+      await navigator.clipboard.writeText(share.invite);
+    } catch {
+      ta.select(); document.execCommand?.('copy');
+    }
+    share.copied = true;
+    renderSync();
+  },
   'sync-upload'() {
     runSync(async () => {
       const rec = await sync.pb.collection('trips').create(
         { owner: sync.pb.authStore.record.id, title: state.title, data: state },
         { fields: 'id,title,updated' },
       );
-      Object.assign(syncCfg, { tripId: rec.id, tripTitle: rec.title, remoteUpdated: rec.updated, dirty: false });
+      Object.assign(syncCfg, { tripId: rec.id, tripTitle: rec.title, remoteUpdated: rec.updated, dirty: false, role: 'owner' });
       saveSync();
       uploadPhotos();
     });
@@ -2163,6 +2334,11 @@ const actions = {
   },
 };
 
+// Was im Nur-Lesen-Modus geht: ansehen, auswählen, ein-/ausklappen, Sync, Export.
+const READONLY_OK = new Set(['select', 'focus-day', 'toggle-day', 'collapse-all', 'expand-all', 'open-photo', 'close-photo',
+  'open-sync', 'close-sync', 'toggle-menu', 'export', 'fit-all', 'retry-routes', 'toggle-follow', 'today', 'toggle-map',
+  'toggle-legend', 'edit-journey', 'share-copy']);
+
 function setMenu(open) {
   $('#trip-menu').hidden = !open;
   $('#menu-btn').setAttribute('aria-expanded', String(open));
@@ -2176,6 +2352,7 @@ document.addEventListener('click', (e) => {
   const el = e.target.closest('[data-action]');
   if (!el || !actions[el.dataset.action]) return;
   e.preventDefault();
+  if (readOnly() && !READONLY_OK.has(el.dataset.action) && !el.dataset.action.startsWith('sync-')) return;
   // Ausgewähltes oder bearbeitetes Element in einem eingeklappten Tag: Tag aufklappen.
   if (['add-ex', 'add-entry'].includes(el.dataset.action)) ui.collapsed.delete(el.dataset.day);
   actions[el.dataset.action](el);
@@ -2196,7 +2373,7 @@ document.addEventListener('input', (e) => {
   else if (t.dataset.draftNote !== undefined && ui.draft) ui.draft.data.notes[Number(t.dataset.draftNote)] = t.value;
   else if (t.dataset.jdraft === 'text' && ui.jdraft) ui.jdraft.data.text = t.value;
   else if (t.dataset.jdraft === 'link' && ui.jdraft) ui.jdraft.linkInput = t.value;
-  else if (t.id === 'trip-title') { state.title = t.value; save(); }
+  else if (t.id === 'trip-title' && !readOnly()) { state.title = t.value; save(); }
 });
 
 document.addEventListener('change', (e) => {
@@ -2213,10 +2390,12 @@ document.addEventListener('change', (e) => {
       render();
       if (t.value === 'custom') document.querySelector('[data-picker="draft:from"]')?.focus();
     }
+  } else if (t.dataset.shareRole) {
+    sendShare({ email: t.dataset.shareRole, role: t.value });
   } else if (t.dataset.journeyMode) {
     const n = nightById(t.dataset.journeyMode);
     if (n?.journey) { n.journey.mode = t.value; save(); render(); drawMap(false); }
-  } else if (t.id === 'start-date' && t.value) {
+  } else if (t.id === 'start-date' && t.value && !readOnly()) {
     state.startDate = t.value; save(); render(); drawMap(false);
   } else if (t.id === 'jdraft-photos' && t.files.length) {
     const files = [...t.files];
@@ -2468,7 +2647,7 @@ function endDrag(commit) {
 
 document.addEventListener('pointerdown', (e) => {
   const h = e.target.closest('[data-drag]');
-  if (!h || e.button > 0) return;
+  if (!h || e.button > 0 || readOnly()) return;
   e.preventDefault();
   drag = { from: dayIndex(h.dataset.drag), to: null, startY: e.clientY, y: e.clientY, pointerId: e.pointerId, section: h.closest('.day'), started: false };
   try { h.setPointerCapture(e.pointerId); } catch { /* ohne Capture geht es auch */ }
@@ -2490,7 +2669,7 @@ document.addEventListener('pointercancel', () => endDrag(false));
 
 document.addEventListener('keydown', (e) => {
   const h = e.target.closest?.('[data-drag]');
-  if (!h || (e.key !== 'ArrowUp' && e.key !== 'ArrowDown')) return;
+  if (!h || readOnly() || (e.key !== 'ArrowUp' && e.key !== 'ArrowDown')) return;
   e.preventDefault();
   const i = dayIndex(h.dataset.drag);
   if (moveDay(i, e.key === 'ArrowUp' ? i - 1 : i + 2)) document.querySelector(`[data-drag="${h.dataset.drag}"]`)?.focus();
@@ -2500,6 +2679,28 @@ $('#app-version').textContent = `Version ${APP_VERSION}`;
 render();
 drawMap(true);
 renderFollowBtn();
+
+if (loadJSON('reisekarte.legend.v1', true) === false) {
+  $('.legend').classList.add('is-closed');
+  $('.legend-toggle').setAttribute('aria-expanded', 'false');
+}
+
+// Einladungslink (…?server=https://…): Server-Adresse übernehmen und zur Anmeldung auffordern.
+{
+  const params = new URLSearchParams(location.search);
+  const invited = params.get('server');
+  if (invited) {
+    history.replaceState(null, '', location.pathname);
+    try {
+      const u = new URL(invited);
+      if (!syncCfg.url && (u.protocol === 'https:' || ['localhost', '127.0.0.1'].includes(u.hostname))) {
+        syncCfg.url = u.origin;
+        saveSync();
+      }
+    } catch { /* ungültiger Link: ignorieren */ }
+    setTimeout(() => { if (syncCfg.url && !loggedIn()) openSync(); }, 0);
+  }
+}
 
 // Online-Sync: Anmeldung auffrischen und Stand vom Server holen.
 connectServer();

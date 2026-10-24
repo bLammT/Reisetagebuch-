@@ -571,3 +571,57 @@ body.is-resizing #map { pointer-events: none; }
   .resizer::after { top: 6px; bottom: auto; left: 50%; width: 44px; height: 4px; margin-left: -22px; border-radius: 2px; background: var(--line); }
   body.is-resizing, body.is-resizing * { cursor: row-resize !important; }
 }
+
+/* ---------- Nur lesen ---------- */
+.ro-banner { margin: 0; padding: 8px var(--gutter); background: var(--accent-soft); color: var(--accent); font-size: 13px; font-weight: 500; }
+.is-readonly .ro-hide,
+.is-readonly .drag-handle, .is-readonly [data-action="remove-day"], .is-readonly .day-actions, .is-readonly .day-gap,
+.is-readonly .ex-actions, .is-readonly .entry-actions, .is-readonly .nights-row .step-btn, .is-readonly [data-action="remove-night"],
+.is-readonly .place [data-action="edit-place"], .is-readonly .place [data-action="clear-place"], .is-readonly .night-head [data-action="edit-place"],
+.is-readonly .transit-btn, .is-readonly [data-action="toggle-transit"], .is-readonly .journey [data-action="edit-journey"] { display: none !important; }
+.is-readonly .trip-title { cursor: default; }
+
+/* ---------- Teilen ---------- */
+.share-list li { gap: 8px; }
+.share-list li > span:first-child { flex: 1; }
+.share-list select, .share-row select {
+  border: 1px solid var(--line); border-radius: 7px; padding: 6px 8px; background: var(--field); color: var(--ink); font-size: 14px;
+}
+.share-row { display: flex; gap: 6px; }
+.share-row input { flex: 1; min-width: 0; }
+.invite { display: grid; gap: 6px; }
+.invite-text {
+  width: 100%; border: 1px solid var(--line); border-radius: 7px; padding: 8px; background: var(--field);
+  color: var(--ink); font: 13px/1.45 var(--font-body); resize: vertical;
+}
+
+/* ---------- Einstieg ---------- */
+.hint {
+  margin: 12px var(--gutter) 0; padding: 12px 14px; border-radius: var(--radius);
+  background: var(--accent-soft); color: var(--ink); display: grid; gap: 8px; font-size: 14px;
+}
+.hint-title { margin: 0; font: 700 15px var(--font-display); color: var(--accent); }
+.hint ol { margin: 0; padding-left: 20px; display: grid; gap: 4px; }
+.hint .btn { justify-self: start; }
+
+/* ---------- Legende einklappbar ---------- */
+.legend-toggle {
+  border: 0; background: none; padding: 0 0 2px; font: 600 11px var(--font-mono); letter-spacing: .08em;
+  text-transform: uppercase; color: #5d6b70; cursor: pointer; text-align: left;
+}
+.legend-toggle::after { content: " ▾"; }
+.legend.is-closed .legend-toggle::after { content: " ▸"; }
+.legend.is-closed .legend-row { display: none; }
+.legend.is-closed { padding: 6px 10px; }
+
+/* ---------- Größere Tippflächen auf Touch-Geräten ---------- */
+@media (pointer: coarse) {
+  .icon-btn { width: 38px; height: 38px; font-size: 20px; }
+  .drag-handle { padding: 8px 6px; font-size: 20px; }
+  .step-btn { width: 38px; height: 38px; font-size: 18px; }
+  .link-btn { padding: 8px 6px; }
+  .act-btn, .edge-btn { padding: 8px 14px; font-size: 14px; }
+  .gap-btn { padding: 4px 12px; }
+  .seg label { padding: 7px 11px; }
+  .day-head { min-height: 40px; }
+}
