@@ -4,15 +4,19 @@
  * Reisekarte – Prototyp
  *
  * Datenmodell (wird im localStorage gespeichert und als JSON exportiert):
- *   trip  = { title, startDate: 'YYYY-MM-DD', days: [Day] }
- *   Day   = { id, night: Place|null, transit, journey: Journey|null, trips: [Trip] }
- *           night = wo man am Ende dieses Tages schläft
- *           transit = true: die Nacht wird unterwegs verbracht (z. B. Nachtzug)
+ *   trip  = { title, startDate: 'YYYY-MM-DD', preNight: Night|null, days: [Day] }
+ *           preNight = optionale Nacht vor dem ersten Tag
+ *   Day   = { id, ...Night, trips: [Trip] }
+ *           die Nacht eines Tages ist die Nacht nach ihm (zwischen diesem und dem nächsten Tag);
+ *           beim letzten Tag ist sie optional
+ *   Night = { night: Place|null, transit, journey: Journey|null }
+ *           night = wo man schläft; transit = true: die Nacht wird unterwegs verbracht (z. B. Nachtzug)
  *   Journey = { from: Place|null, to: Place|null, mode }  nur bei transit
  *           from = null heißt: Abfahrt dort, wo man morgens aufgewacht ist
- *   Trip  = { id, name, from: Place|null, via: [Place], to: Place, roundtrip, mode }
- *           from = null heißt: Start bei der Unterkunft, in der man aufgewacht ist
- *   Place = { name, label, lat, lon }
+ *   Trip  = { id, name, from: Place|null, via: [Place], end: 'start'|'night'|'place', to: Place|null, mode }
+ *           Start → Stopps (via) → Ende; from = null heißt: Start dort, wo man aufgewacht ist.
+ *           end: 'start' = zurück zum Start (Ausflug), 'night' = zur Unterkunft der Nacht (Weiterreise), 'place' = zu „to“
+ *   Place = { name, label, lat, lon, note? }  note = was man dort macht (nur bei Stopps)
  *   trip.journal = [Entry]
  *   Entry = { id, dayId, at: ISO-Zeit, text, place: Place|null, photos: [photoId], links: [url] }
  *           Fotos liegen verkleinert in IndexedDB (zu groß für localStorage),
@@ -72,25 +76,25 @@ function sampleTrip() {
   const P = (name, label, lat, lon) => ({ name, label, lat, lon });
   const meran = P('Meran', 'Südtirol, Italien', 46.6713, 11.1525);
   const brixen = P('Brixen', 'Südtirol, Italien', 46.7150, 11.6560);
-  const day = (night, trips = []) => ({ id: uid(), night: night && clone(night), trips });
-  const trip = (name, to, opts = {}) => ({
-    id: uid(), name, from: null, via: [], to, roundtrip: true, mode: 'car', ...opts,
+  const day = (night, trips = []) => ({ id: uid(), night: night && clone(night), transit: false, journey: null, trips });
+  const trip = (name, via, opts = {}) => ({
+    id: uid(), name, from: null, via, end: 'start', to: null, mode: 'car', ...opts,
   });
   return {
     title: 'Südtirol im Juni (Beispiel)',
     journal: [],
     startDate: '2026-06-12',
+    preNight: null,
     days: [
       day(meran),
-      day(meran, [trip('Wanderung zum Schloss Tirol', P('Schloss Tirol', 'Dorf Tirol, Südtirol', 46.6927, 11.1505), { mode: 'foot' })]),
-      day(meran, [trip('Weinstraße und Bozen', P('Bozen', 'Südtirol, Italien', 46.4983, 11.3548), {
-        via: [P('Kaltern', 'Kaltern an der Weinstraße', 46.4140, 11.2420)],
-      })]),
-      day(brixen, [trip('Umzug nach Brixen', clone(brixen), {
-        roundtrip: false, via: [P('Klausen', 'Südtirol, Italien', 46.6390, 11.5660)],
-      })]),
-      day(brixen, [trip('Ausflug ins Grödnertal', P('St. Ulrich', 'Gröden, Südtirol', 46.5770, 11.6720))]),
-      day(null, [trip('Spaziergang Kloster Neustift', P('Kloster Neustift', 'Vahrn, Südtirol', 46.7360, 11.6580), { mode: 'foot' })]),
+      day(meran, [trip('Wanderung zum Schloss Tirol', [P('Schloss Tirol', 'Dorf Tirol, Südtirol', 46.6927, 11.1505)], { mode: 'foot' })]),
+      day(meran, [trip('Weinstraße und Bozen', [
+        { ...P('Kaltern', 'Kaltern an der Weinstraße', 46.4140, 11.2420), note: 'Weinprobe am See' },
+        P('Bozen', 'Südtirol, Italien', 46.4983, 11.3548),
+      ])]),
+      day(brixen, [trip('Weiter nach Brixen', [{ ...P('Klausen', 'Südtirol, Italien', 46.6390, 11.5660), note: 'Mittagessen in der Altstadt' }], { end: 'night' })]),
+      day(brixen, [trip('Ausflug ins Grödnertal', [P('St. Ulrich', 'Gröden, Südtirol', 46.5770, 11.6720)])]),
+      day(null, [trip('Spaziergang Kloster Neustift', [P('Kloster Neustift', 'Vahrn, Südtirol', 46.7360, 11.6580)], { mode: 'foot' })]),
     ],
   };
 }
@@ -98,39 +102,53 @@ function sampleTrip() {
 function emptyTrip() {
   const d = new Date();
   const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-  return { title: 'Meine Reise', startDate: iso, days: [{ id: uid(), night: null, trips: [] }], journal: [] };
+  return { title: 'Meine Reise', startDate: iso, preNight: null, days: [{ id: uid(), night: null, transit: false, journey: null, trips: [] }], journal: [] };
 }
 
 function normalizePlace(p) {
   if (!p || typeof p !== 'object') return null;
   const lat = Number(p.lat), lon = Number(p.lon);
   if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
-  return { name: String(p.name || 'Ort'), label: String(p.label || ''), lat, lon };
+  const out = { name: String(p.name || 'Ort'), label: String(p.label || ''), lat, lon };
+  const note = String(p.note || '').trim().slice(0, 200);
+  if (note) out.note = note;
+  return out;
 }
 function normalizeJourney(j) {
   const o = j && typeof j === 'object' ? j : {};
   return { from: normalizePlace(o.from), to: normalizePlace(o.to), mode: JOURNEY_MODES.includes(o.mode) ? o.mode : 'train' };
 }
 const isWebLink = (u) => /^https?:\/\/\S+$/i.test(String(u));
+function normalizeNight(n) {
+  const o = n && typeof n === 'object' ? n : {};
+  const night = normalizePlace(o.night);
+  const transit = Boolean(o.transit) && !night;
+  return { night, transit, journey: transit ? normalizeJourney(o.journey) : null };
+}
+const TRIP_ENDS = ['start', 'night', 'place'];
+function normalizeEx(x) {
+  const via = (Array.isArray(x.via) ? x.via : []).map(normalizePlace).filter(Boolean);
+  let to = normalizePlace(x.to);
+  let end = TRIP_ENDS.includes(x.end) ? x.end : null;
+  if (!end) {
+    // Altes Format: Ziel + Rundtour ja/nein. Bei einer Rundtour ist das Ziel der letzte Stopp.
+    end = x.roundtrip ? 'start' : 'place';
+    if (x.roundtrip && to) { via.push(to); to = null; }
+  }
+  if (end !== 'place') to = null;
+  return { id: String(x.id || uid()), name: String(x.name || ''), from: normalizePlace(x.from), via, end, to, mode: PROFILES[x.mode] ? x.mode : 'car' };
+}
+const exValid = (x) => (x.end === 'place' ? Boolean(x.to) : x.end === 'start' ? x.via.length > 0 : true);
 function normalizeTrip(t) {
   if (!t || typeof t !== 'object' || !Array.isArray(t.days)) throw new Error('Keine gültige Reisedatei.');
   return {
     title: String(t.title || 'Meine Reise'),
     startDate: /^\d{4}-\d{2}-\d{2}$/.test(t.startDate) ? t.startDate : emptyTrip().startDate,
+    preNight: t.preNight ? normalizeNight(t.preNight) : null,
     days: t.days.map((d) => ({
       id: String(d.id || uid()),
-      night: normalizePlace(d.night),
-      transit: Boolean(d.transit) && !normalizePlace(d.night),
-      journey: Boolean(d.transit) && !normalizePlace(d.night) ? normalizeJourney(d.journey) : null,
-      trips: (Array.isArray(d.trips) ? d.trips : []).map((x) => ({
-        id: String(x.id || uid()),
-        name: String(x.name || ''),
-        from: normalizePlace(x.from),
-        via: (Array.isArray(x.via) ? x.via : []).map(normalizePlace).filter(Boolean),
-        to: normalizePlace(x.to),
-        roundtrip: Boolean(x.roundtrip),
-        mode: PROFILES[x.mode] ? x.mode : 'car',
-      })).filter((x) => x.to),
+      ...normalizeNight(d),
+      trips: (Array.isArray(d.trips) ? d.trips : []).map(normalizeEx).filter(exValid),
     })),
     journal: (Array.isArray(t.journal) ? t.journal : []).map((e) => ({
       id: String(e.id || uid()),
@@ -161,6 +179,7 @@ const ui = {
   pickers: {}, // key -> { query, results, loading, error, editing }
   mapPick: null, // key des Ortes, der per Kartenklick gesetzt wird
   jdraft: null, // Tagebucheintrag in Bearbeitung: { dayId, entryId|null, data, added, removed, error, busy, locating }
+  openNight: null, // Nacht nach dem letzten Tag, die gerade eingetragen wird
 };
 
 // Online-Sync (siehe Abschnitt weiter unten). Gespeichert wird nur die Verknüpfung, die Anmeldung hält das PocketBase-SDK.
@@ -205,48 +224,66 @@ function kmBetween(a, b) {
 }
 const samePlace = (a, b) => Boolean(a && b && kmBetween(a, b) < SAME_PLACE_KM);
 
+// Nächte: Index k = Nacht nach Tag k; k = -1 ist die optionale Nacht vor dem ersten Tag.
+const PRE = 'pre';
+const nightAt = (k) => (k < 0 ? state.preNight : state.days[k]) || null;
+const nightId = (k) => (k < 0 ? PRE : state.days[k].id);
+const nightIndex = (id) => (id === PRE ? -1 : dayIndex(id));
+const nightById = (id) => (id === PRE ? state.preNight : dayById(id));
+// Nummer der Nacht in der Reise (die Nacht vor Tag 1 ist Nacht 1).
+const nightNo = (k) => k + 1 + (state.preNight ? 1 : 0);
+const hasNight = (n) => Boolean(n && (n.night || n.transit));
+
 // Wo wacht man an Tag i auf? In der Unterkunft der Vornacht oder nach einer Nacht unterwegs am Ankunftsort.
 function morningPlace(i) {
-  if (i <= 0) return null;
-  const prev = state.days[i - 1];
-  return prev.night || (prev.transit && prev.journey?.to) || null;
+  const prev = nightAt(i - 1);
+  return prev?.night || (prev?.transit && prev.journey?.to) || null;
 }
 // Wo startet man an Tag i? Wo man aufgewacht ist, am Anreisetag in der eigenen Unterkunft.
 function stayPlaceFor(i) {
   return morningPlace(i) || state.days[i].night || null;
 }
-// Nacht unterwegs mit Start und Ziel; ohne Startort gilt der Ort, an dem man morgens war.
-function journeyFor(i) {
+// Wohin geht es abends? Zur Unterkunft oder bei einer Nacht unterwegs zum Abfahrtsort.
+function eveningPlace(i) {
   const d = state.days[i];
-  if (!d.transit || !d.journey) return null;
-  const from = d.journey.from || morningPlace(i);
-  const to = d.journey.to;
-  return from && to ? { from, to, mode: d.journey.mode } : null;
+  return d.night || (d.transit && d.journey?.from) || null;
+}
+// Nacht unterwegs mit Start und Ziel; ohne Startort gilt der Ort, an dem man morgens war.
+function journeyFor(k) {
+  const n = nightAt(k);
+  if (!n?.transit || !n.journey) return null;
+  const from = n.journey.from || (k >= 0 ? morningPlace(k) : null);
+  const to = n.journey.to;
+  return from && to ? { from, to, mode: n.journey.mode } : null;
+}
+function endPlace(i, ex) {
+  if (ex.end === 'start') return ex.from || stayPlaceFor(i);
+  if (ex.end === 'night') return eveningPlace(i);
+  return ex.to;
 }
 function waypoints(i, ex) {
   const start = ex.from || stayPlaceFor(i);
-  if (!start || !ex.to) return [];
-  const pts = [start, ...ex.via.filter(Boolean), ex.to];
-  if (ex.roundtrip) pts.push(start);
-  return pts;
+  const end = endPlace(i, ex);
+  if (!start || !end) return [];
+  return [start, ...ex.via, end];
 }
 // Ortswechsel: neue Unterkunft, und kein einfacher Ausflug des Tages endet schon dort.
 function transferFor(i) {
-  if (i === 0) return null;
   const a = morningPlace(i), b = state.days[i].night;
   if (!a || !b || samePlace(a, b)) return null;
-  const covered = state.days[i].trips.some((ex) => !ex.roundtrip && samePlace(ex.to, b));
+  const covered = state.days[i].trips.some((ex) => ex.end !== 'start' && samePlace(endPlace(i, ex), b));
   return covered ? null : { from: a, to: b };
 }
-// Aufeinanderfolgende Nächte am selben Ort zusammenfassen.
+// Aufeinanderfolgende Nächte am selben Ort zusammenfassen (from/to = Index der Nacht, -1 = vor Tag 1).
 function stayGroups() {
   const groups = [];
-  state.days.forEach((d, i) => {
-    if (!d.night) return;
+  for (let k = -1; k < state.days.length; k++) {
+    const n = nightAt(k);
+    if (!n?.night) continue;
     const last = groups[groups.length - 1];
-    if (last && last.to === i - 1 && samePlace(last.place, d.night)) last.to = i;
-    else groups.push({ place: d.night, from: i, to: i });
-  });
+    if (last && last.to === k - 1 && samePlace(last.place, n.night)) last.to = k;
+    else groups.push({ place: n.night, from: k, to: k });
+  }
   return groups;
 }
 // Für die Karte: alle Aufenthalte am selben Ort in einem Pin (z. B. N7–8, 12–13).
@@ -374,8 +411,8 @@ function transferStats(i) {
   const t = transferFor(i);
   return t ? legStats('car', [t.from, t.to]) : null;
 }
-function journeyStats(i) {
-  const j = journeyFor(i);
+function journeyStats(k) {
+  const j = journeyFor(k);
   return j ? legStats(j.mode, [j.from, j.to]) : null;
 }
 
@@ -397,6 +434,7 @@ function fmtStats(st) {
 function updateStats() {
   document.querySelectorAll('[data-stat]').forEach((el) => {
     const [kind, a, b] = el.dataset.stat.split(':');
+    if (kind === 'journey') { el.textContent = fmtStats(journeyStats(nightIndex(a))); return; }
     const i = dayIndex(a);
     if (i < 0) return;
     if (kind === 'ex') {
@@ -404,8 +442,6 @@ function updateStats() {
       el.textContent = ex ? fmtStats(exStats(i, ex)) : '';
     } else if (kind === 'transfer') {
       el.textContent = fmtStats(transferStats(i));
-    } else if (kind === 'journey') {
-      el.textContent = fmtStats(journeyStats(i));
     } else if (kind === 'day') {
       const parts = [transferStats(i), ...state.days[i].trips.map((ex) => exStats(i, ex)), journeyStats(i)].filter(Boolean);
       if (!parts.length) { el.textContent = ''; return; }
@@ -619,20 +655,21 @@ function drawMap(fit) {
       const ll = legLatLngs(ex.mode, pts, r);
       drawLine(ll, color, {
         level, approx: !(r && r.coords), weight: 4, dash: DASH[ex.mode],
-        tooltip: `Tag ${i + 1}: ${esc(tripTitle(ex))} (${PROFILES[ex.mode].label})`,
+        tooltip: `Tag ${i + 1}: ${esc(tripTitle(i, ex))} (${PROFILES[ex.mode].label})`,
         onClick: pick(key, d.id),
       });
       collect(ll, key);
 
       const op = MARKER_OPACITY[level];
       const big = level === 'selected' ? 2 : 0;
-      const stops = [...ex.via.filter(Boolean), ex.to];
+      // Stopps; das Ende nur, wenn es nicht der Start oder die Unterkunft ist (die haben eigene Pins).
+      const stops = [...ex.via, ...(ex.end === 'place' ? [ex.to] : [])];
       stops.forEach((p, k) => {
-        const isGoal = k === stops.length - 1;
+        const isGoal = ex.end === 'place' && k === stops.length - 1;
         L.circleMarker([p.lat, p.lon], {
-          radius: (isGoal ? 7 : 5) + big, color: '#ffffff', weight: 2,
+          radius: (isGoal ? 7 : 6) + big, color: '#ffffff', weight: 2,
           fillColor: color, fillOpacity: op, opacity: op,
-        }).bindTooltip(`${esc(p.name)}<br><small>Tag ${i + 1} · ${isGoal ? 'Ziel' : 'Zwischenstopp'}</small>`).on('click', pick(key, d.id)).addTo(markerLayer);
+        }).bindTooltip(`${esc(p.name)}${p.note ? ` · ${esc(p.note)}` : ''}<br><small>Tag ${i + 1} · ${isGoal ? 'Ziel' : `Stopp ${k + 1}`}</small>`).on('click', pick(key, d.id)).addTo(markerLayer);
       });
       if (ex.from) {
         L.circleMarker([ex.from.lat, ex.from.lon], {
@@ -641,28 +678,45 @@ function drawMap(fit) {
       }
     });
 
-    const j = journeyFor(i);
+    drawJourney(i, collect);
+  });
+
+  // Nacht vor Tag 1 (unterwegs), gehört auf der Karte zu Tag 1.
+  if (state.days.length) {
+    const d0 = state.days[0].id;
+    drawJourney(-1, (ll, key) => {
+      all.push(...ll);
+      dayPts.get(d0).push(...ll);
+      if (fi === 0) focus.push(...ll);
+      if (sel === key) selPts.push(...ll);
+    });
+  }
+
+  function drawJourney(k, collect) {
+    const j = journeyFor(k);
     if (j) {
-      const key = `journey:${d.id}`;
+      const i = Math.max(k, 0);
+      const d = state.days[i];
+      const key = `journey:${nightId(k)}`;
       const level = levelOf(i, key);
       const r = getRoute(j.mode, [j.from, j.to]);
       const ll = legLatLngs(j.mode, [j.from, j.to], r);
       drawLine(ll, TRANSFER_COLOR, {
         level, approx: !(r && r.coords), weight: 5, dash: DASH[j.mode],
-        tooltip: `Nacht ${i + 1} unterwegs: ${esc(j.from.name)} → ${esc(j.to.name)} (${PROFILES[j.mode].label})`,
+        tooltip: `Nacht ${nightNo(k)} unterwegs: ${esc(j.from.name)} → ${esc(j.to.name)} (${PROFILES[j.mode].label})`,
         onClick: pick(key, d.id),
       });
       collect(ll, key);
       const op = MARKER_OPACITY[level];
-      [j.from, j.to].forEach((p, k) => {
+      [j.from, j.to].forEach((p, n) => {
         L.circleMarker([p.lat, p.lon], {
           radius: 6, color: '#ffffff', weight: 2, fillColor: TRANSFER_COLOR, fillOpacity: op, opacity: op,
-        }).bindTooltip(`${esc(p.name)}<br><small>Nacht ${i + 1} · ${k ? 'Ankunft' : 'Abfahrt'}</small>`).on('click', pick(key, d.id)).addTo(markerLayer);
+        }).bindTooltip(`${esc(p.name)}<br><small>Nacht ${nightNo(k)} · ${n ? 'Ankunft' : 'Abfahrt'}</small>`).on('click', pick(key, d.id)).addTo(markerLayer);
       });
     }
-  });
+  }
 
-  const selStayPlace = sel?.startsWith('stay:') ? dayById(sel.slice(5))?.night : null;
+  const selStayPlace = sel?.startsWith('stay:') ? nightById(sel.slice(5))?.night : null;
 
   stayPins().forEach((pin) => {
     const isSel = samePlace(pin.place, selStayPlace);
@@ -671,7 +725,7 @@ function drawMap(fit) {
     const pinOnly = Boolean(sel) && (sel.startsWith('stay:') || sel.startsWith('entry:'));
     const faded = (fi >= 0 && !relevant) || (pinOnly && !isSel);
     const nights = pin.ranges.reduce((n, g) => n + g.to - g.from + 1, 0);
-    const nightsTxt = 'N' + pin.ranges.map((g) => (g.from === g.to ? `${g.from + 1}` : `${g.from + 1}–${g.to + 1}`)).join(', ');
+    const nightsTxt = 'N' + pin.ranges.map((g) => (g.from === g.to ? `${nightNo(g.from)}` : `${nightNo(g.from)}–${nightNo(g.to)}`)).join(', ');
     const icon = L.divIcon({
       className: 'stay-icon',
       iconSize: [0, 0],
@@ -684,11 +738,10 @@ function drawMap(fit) {
       .addTo(markerLayer);
     // Angeklickt: zur ersten Übernachtung an diesem Ort (oder der, die gerade ausgewählt ist).
     const g = pin.ranges.find((x) => fi >= x.from && fi <= x.to) || pin.ranges[0];
-    const stayDay = state.days[g.from].id;
-    marker.on('click', pick(`stay:${stayDay}`, stayDay));
+    marker.on('click', pick(`stay:${nightId(g.from)}`, state.days[Math.max(g.from, 0)].id));
     all.push([pin.place.lat, pin.place.lon]);
     pin.ranges.forEach((x) => {
-      for (let k = x.from; k <= Math.min(x.to + 1, state.days.length - 1); k++) dayPts.get(state.days[k].id).push([pin.place.lat, pin.place.lon]);
+      for (let k = Math.max(x.from, 0); k <= Math.min(x.to + 1, state.days.length - 1); k++) dayPts.get(state.days[k].id).push([pin.place.lat, pin.place.lon]);
     });
     if (relevant) focus.push([pin.place.lat, pin.place.lon]);
     if (isSel) { selPts.push([pin.place.lat, pin.place.lon]); selMarker = marker; }
@@ -818,11 +871,11 @@ function picker(key) {
 function placeRef(key) {
   const [kind, a, b] = key.split(':');
   if (kind === 'night') {
-    const d = dayById(a);
+    const d = nightById(a);
     return { get: () => d?.night ?? null, set: (v) => { if (d) { d.night = v; if (v) { d.transit = false; d.journey = null; } } }, persist: true };
   }
   if (kind === 'jfrom' || kind === 'jto') {
-    const d = dayById(a);
+    const d = nightById(a);
     const field = kind === 'jfrom' ? 'from' : 'to';
     return { get: () => d?.journey?.[field] ?? null, set: (v) => { if (d?.journey) d.journey[field] = v; }, persist: true };
   }
@@ -848,9 +901,13 @@ function setPlace(key, place) {
 
 /* ---------------------------------------------------------------- Seitenleiste */
 
-function tripTitle(ex) {
+const END_LABEL = { start: 'Ausflug', night: 'Weiterreise', place: 'Einfache Strecke' };
+
+function tripTitle(i, ex) {
   if (ex.name) return ex.name;
-  return ex.roundtrip ? `Rundtour nach ${ex.to.name}` : `Nach ${ex.to.name}`;
+  const end = endPlace(i, ex);
+  if (ex.end === 'start') return `Ausflug: ${ex.via.map((p) => p.name).join(', ')}`;
+  return end ? `Nach ${end.name}` : 'Weiterreise';
 }
 
 function pickerHTML(key, place, placeholder = 'Ort suchen, z. B. Meran') {
@@ -877,15 +934,16 @@ function pickerHTML(key, place, placeholder = 'Ort suchen, z. B. Meran') {
 
 function exHTML(d, i, ex) {
   const start = ex.from || stayPlaceFor(i);
-  const names = [start ? start.name : '?', ...ex.via.map((p) => p.name), ex.to.name];
-  if (ex.roundtrip) names.push(start ? start.name : '?');
+  const end = endPlace(i, ex);
+  const stop = (p) => `${esc(p.name)}${p.note ? ` <span class="ex-note">(${esc(p.note)})</span>` : ''}`;
+  const route = [start ? esc(start.name) : '?', ...ex.via.map(stop), end ? esc(end.name) : '?'].join(' → ');
   const key = `trip:${ex.id}`;
   return `<div class="ex selectable${ui.sel === key ? ' is-selected' : ''}" data-action="select" data-sel="${key}" data-day="${d.id}" role="button" tabindex="0" aria-pressed="${ui.sel === key}">
     <div class="ex-body">
-      <div class="ex-title">${esc(tripTitle(ex))}</div>
-      <div class="ex-route">${names.map(esc).join(' → ')}</div>
+      <div class="ex-title">${esc(tripTitle(i, ex))}</div>
+      <div class="ex-route">${route}</div>
       <div class="ex-meta">
-        <span class="chip">${ex.roundtrip ? 'Rundtour' : 'Einfache Strecke'}</span>
+        <span class="chip">${END_LABEL[ex.end]}</span>
         <span class="chip">${PROFILES[ex.mode].label}</span>
         <span class="ex-stat" data-stat="ex:${d.id}:${ex.id}"></span>
       </div>
@@ -900,31 +958,44 @@ function exHTML(d, i, ex) {
 function editorHTML(d, i) {
   const { data, error, exId } = ui.draft;
   const stay = stayPlaceFor(i);
+  const evening = eveningPlace(i);
+  const seg = (name, field, value, label) => `<label><input type="radio" name="${name}" data-draft="${field}" value="${value}" ${data[field] === value ? 'checked' : ''}>${label}</label>`;
   return `<div class="editor">
-    <p class="editor-title">${exId ? 'Ausflug bearbeiten' : 'Neuer Ausflug'}</p>
+    <p class="editor-title">${exId ? 'Trip bearbeiten' : 'Neuer Trip'}</p>
     <label class="text-field">Name (optional)
-      <input id="draft-name" type="text" data-draft="name" value="${esc(data.name)}" placeholder="z. B. Wanderung zum See">
+      <input id="draft-name" type="text" data-draft="name" value="${esc(data.name)}" placeholder="z. B. ATV und Rafting">
     </label>
     <div>
       <div class="field-label">Start</div>
-      <div class="seg" role="radiogroup" aria-label="Startort">
-        <label><input id="draft-from-stay" type="radio" name="draft-from" data-draft="fromMode" value="stay" ${data.fromMode === 'stay' ? 'checked' : ''}>Unterkunft${stay ? ` (${esc(stay.name)})` : ' (noch keine)'}</label>
-        <label><input id="draft-from-custom" type="radio" name="draft-from" data-draft="fromMode" value="custom" ${data.fromMode === 'custom' ? 'checked' : ''}>Anderer Ort</label>
+      <div class="seg" role="radiogroup" aria-label="Start">
+        ${seg('draft-from', 'fromMode', 'stay', `Unterkunft${stay ? ` (${esc(stay.name)})` : ' (noch keine)'}`)}
+        ${seg('draft-from', 'fromMode', 'custom', 'Anderer Ort')}
       </div>
       ${data.fromMode === 'custom' ? pickerHTML('draft:from', data.from, 'Startort suchen') : ''}
     </div>
     <div>
-      <div class="field-label">Zwischenstopps</div>
-      <div class="vias">
-        ${data.via.map((p, k) => `<div class="via-item"><div>${pickerHTML(`draft:via:${k}`, p, `Stopp ${k + 1} suchen`)}</div><button class="icon-btn" data-action="remove-via" data-idx="${k}" aria-label="Stopp entfernen" title="Stopp entfernen">−</button></div>`).join('')}
-        <button class="link-btn" data-action="add-via" style="justify-self:start">+ Zwischenstopp</button>
-      </div>
+      <div class="field-label">Stopps</div>
+      <ol class="vias">
+        ${data.via.map((p, k) => `<li class="via-item">
+          <span class="via-n">${k + 1}</span>
+          <div class="via-fields">
+            ${pickerHTML(`draft:via:${k}`, p, `Stopp ${k + 1} suchen`)}
+            <input class="via-note" type="text" data-draft-note="${k}" value="${esc(data.notes[k] || '')}" placeholder="Was machst du dort? (optional)" aria-label="Notiz zu Stopp ${k + 1}">
+          </div>
+          <button class="icon-btn" data-action="remove-via" data-idx="${k}" aria-label="Stopp ${k + 1} entfernen" title="Stopp entfernen">−</button>
+        </li>`).join('')}
+      </ol>
+      <button class="link-btn" data-action="add-via">+ Stopp</button>
     </div>
     <div>
-      <div class="field-label">Ziel</div>
-      ${pickerHTML('draft:to', data.to, 'Ziel suchen')}
+      <div class="field-label">Ende</div>
+      <div class="seg" role="radiogroup" aria-label="Ende">
+        ${seg('draft-end', 'end', 'start', 'Zurück zum Start')}
+        ${seg('draft-end', 'end', 'night', `Zur Unterkunft${evening ? ` (${esc(evening.name)})` : ' der Nacht'}`)}
+        ${seg('draft-end', 'end', 'place', 'Anderer Ort')}
+      </div>
+      ${data.end === 'place' ? pickerHTML('draft:to', data.to, 'Ziel suchen') : ''}
     </div>
-    <label class="check"><input id="draft-roundtrip" type="checkbox" data-draft="roundtrip" ${data.roundtrip ? 'checked' : ''}>Rundtour: am Ende zurück zum Start</label>
     <label class="text-field">Unterwegs mit
       <select id="draft-mode" data-draft="mode">
         ${Object.entries(PROFILES).map(([k, v]) => `<option value="${k}" ${data.mode === k ? 'selected' : ''}>${v.label}</option>`).join('')}
@@ -932,7 +1003,7 @@ function editorHTML(d, i) {
     </label>
     ${error ? `<p class="editor-error">${esc(error)}</p>` : ''}
     <div class="editor-actions">
-      <button class="btn primary" data-action="save-ex">Ausflug speichern</button>
+      <button class="btn primary" data-action="save-ex">Trip speichern</button>
       <button class="btn ghost" data-action="cancel-ex">Abbrechen</button>
     </div>
   </div>`;
@@ -1036,48 +1107,84 @@ function journalHTML(d) {
   </div>`;
 }
 
-// Wie viele Nächte am Stück schläft man ab Tag i am selben Ort? 0, wenn die Reihe schon früher beginnt.
-function stayRunAt(i) {
-  const d = state.days[i];
-  if (!d.night || (i > 0 && samePlace(state.days[i - 1].night, d.night))) return 0;
-  let n = 1;
-  while (i + n < state.days.length && samePlace(state.days[i + n].night, d.night)) n++;
-  return n;
+// Wie viele Nächte am Stück schläft man ab Nacht k am selben Ort? 0, wenn die Reihe schon früher beginnt.
+function stayRunAt(k) {
+  const n = nightAt(k);
+  if (!n?.night || samePlace(nightAt(k - 1)?.night, n.night)) return 0;
+  let len = 1;
+  while (k + len < state.days.length && samePlace(state.days[k + len].night, n.night)) len++;
+  return len;
 }
 
-function nightsHTML(d, i) {
-  const n = stayRunAt(i);
-  if (!n) return `<p class="nights-row nights-more">Weitere Nacht in <strong>${esc(d.night.name)}</strong></p>`;
+function nightsHTML(k) {
+  const n = stayRunAt(k);
+  const id = nightId(k);
+  if (!n) return `<p class="nights-row nights-more">Weitere Nacht in <strong>${esc(nightAt(k).night.name)}</strong></p>`;
+  if (k < 0) return '';
   return `<div class="nights-row">
     <span>Nächte hier</span>
-    <button class="step-btn" data-action="nights-less" data-day="${d.id}" ${n <= 1 ? 'disabled' : ''} aria-label="Eine Nacht weniger">−</button>
+    <button class="step-btn" data-action="nights-less" data-night="${id}" ${n <= 1 ? 'disabled' : ''} aria-label="Eine Nacht weniger">−</button>
     <span class="nights-n" aria-live="polite">${n}</span>
-    <button class="step-btn" data-action="nights-more" data-day="${d.id}" aria-label="Eine Nacht mehr">+</button>
-    <span class="nights-range">Abreise ${fmtDate(i + n)}</span>
+    <button class="step-btn" data-action="nights-more" data-night="${id}" aria-label="Eine Nacht mehr">+</button>
+    <span class="nights-range">Abreise ${fmtDate(k + n)}</span>
   </div>`;
 }
 
-function journeyHTML(d, i) {
-  const j = d.journey || normalizeJourney(null);
-  const jr = journeyFor(i);
-  const start = morningPlace(i);
-  const key = `journey:${d.id}`;
+function journeyHTML(k) {
+  const n = nightAt(k);
+  const id = nightId(k);
+  const j = n.journey || normalizeJourney(null);
+  const jr = journeyFor(k);
+  const start = k >= 0 ? morningPlace(k) : null;
+  const key = `journey:${id}`;
   return `<div class="journey">
-    <div class="place selectable${ui.sel === key ? ' is-selected' : ''}" data-action="select" data-sel="${key}" data-day="${d.id}" role="button" tabindex="0">
+    <div class="place selectable${ui.sel === key ? ' is-selected' : ''}" data-action="select" data-sel="${key}" data-day="${state.days[Math.max(k, 0)].id}" role="button" tabindex="0">
       <div class="place-text">
-        <span class="place-name">Nacht unterwegs · ${PROFILES[j.mode].label}</span>
-        <span class="place-label">${jr ? `${esc(jr.from.name)} → ${esc(jr.to.name)} · <span data-stat="journey:${d.id}"></span>` : 'Trag ein, wohin es geht'}</span>
+        <span class="place-name">Unterwegs · ${PROFILES[j.mode].label}</span>
+        <span class="place-label">${jr ? `${esc(jr.from.name)} → ${esc(jr.to.name)} · <span data-stat="journey:${id}"></span>` : 'Trag ein, wohin es geht'}</span>
       </div>
-      <button class="link-btn" data-action="toggle-transit" data-day="${d.id}">Unterkunft eintragen</button>
+      <button class="link-btn" data-action="toggle-transit" data-night="${id}">Unterkunft eintragen</button>
     </div>
     <div class="journey-fields">
       <div class="seg" role="radiogroup" aria-label="Verkehrsmittel">
-        ${JOURNEY_MODES.map((m) => `<label><input type="radio" name="jmode-${d.id}" data-journey-mode="${d.id}" value="${m}" ${j.mode === m ? 'checked' : ''}>${PROFILES[m].label}</label>`).join('')}
+        ${JOURNEY_MODES.map((m) => `<label><input type="radio" name="jmode-${id}" data-journey-mode="${id}" value="${m}" ${j.mode === m ? 'checked' : ''}>${PROFILES[m].label}</label>`).join('')}
       </div>
-      <div><div class="field-label">Von</div>${pickerHTML(`jfrom:${d.id}`, j.from, start ? `Abfahrt (leer: ${start.name})` : 'Abfahrtsort suchen')}</div>
-      <div><div class="field-label">Nach</div>${pickerHTML(`jto:${d.id}`, j.to, 'Ankunftsort suchen')}</div>
+      <div><div class="field-label">Von</div>${pickerHTML(`jfrom:${id}`, j.from, start ? `Abfahrt (leer: ${start.name})` : 'Abfahrtsort suchen')}</div>
+      <div><div class="field-label">Nach</div>${pickerHTML(`jto:${id}`, j.to, 'Ankunftsort suchen')}</div>
     </div>
   </div>`;
+}
+
+// Übernachtung als eigene Karte zwischen zwei Tagen (k = Nacht nach Tag k, -1 = vor Tag 1).
+function nightHTML(k) {
+  const n = nightAt(k);
+  const id = nightId(k);
+  const edge = k < 0 || k === state.days.length - 1; // vor dem ersten / nach dem letzten Tag: optional
+  const pk = `night:${id}`;
+  let body;
+  if (n.transit) {
+    body = journeyHTML(k);
+  } else if (n.night && !picker(pk).editing) {
+    body = `<div class="selectable stay-select${ui.sel === `stay:${id}` ? ' is-selected' : ''}" data-action="select" data-sel="stay:${id}" data-day="${state.days[Math.max(k, 0)].id}" role="button" tabindex="0">${pickerHTML(pk, n.night)}</div>${nightsHTML(k)}`;
+  } else {
+    body = `${pickerHTML(pk, n.night, 'Unterkunft oder Ort suchen')}${n.night ? '' : `<button class="link-btn transit-btn" data-action="toggle-transit" data-night="${id}">Diese Nacht bin ich unterwegs</button>`}`;
+  }
+  return `<section class="night${hasNight(n) ? '' : ' is-empty'}" id="night-${id}">
+    <div class="night-head">
+      <span class="night-ico" aria-hidden="true">☾</span>
+      <span class="night-n">Nacht ${nightNo(k)}</span>
+      <span class="night-date">${fmtDate(k)} → ${fmtDate(k + 1)}</span>
+      ${edge ? `<button class="icon-btn" data-action="remove-night" data-night="${id}" aria-label="Übernachtung entfernen" title="Übernachtung entfernen">×</button>` : ''}
+    </div>
+    ${body}
+  </section>`;
+}
+
+// Platz für eine optionale Nacht am Anfang oder Ende: als Karte, wenn eingetragen, sonst als Knopf.
+function edgeNightHTML(k) {
+  const n = nightAt(k);
+  if (k < 0 ? n : hasNight(n) || ui.openNight === nightId(k)) return nightHTML(k);
+  return `<div class="night-add"><button class="add-btn" data-action="add-night" data-night="${k < 0 ? PRE : nightId(k)}">☾ Übernachtung ${k < 0 ? 'vor dem ersten Tag' : 'nach dem letzten Tag'}</button></div>`;
 }
 
 function gapHTML(at) {
@@ -1085,12 +1192,9 @@ function gapHTML(at) {
 }
 
 function dayHTML(d, i) {
-  const morning = morningPlace(i);
-  const afterTransit = i > 0 && state.days[i - 1].transit;
   const focused = ui.focusDay === d.id;
   const draftHere = ui.draft && ui.draft.dayId === d.id;
   const t = transferFor(i);
-  const lastDay = i === state.days.length - 1;
   const isToday = i === todayIndex();
   return `<section id="day-${d.id}" class="day${focused ? ' is-focused' : ''}" style="--day:${dayColor(i)}">
     <div class="day-head">
@@ -1101,20 +1205,12 @@ function dayHTML(d, i) {
       <span class="day-stat" data-stat="day:${d.id}"></span>
       <button class="icon-btn" data-action="remove-day" data-day="${d.id}" aria-label="Tag ${i + 1} löschen" title="Tag löschen">×</button>
     </div>
-    ${morning ? `<p class="day-morning">Morgens in <strong>${esc(morning.name)}</strong>${afterTransit ? ' nach der Nacht unterwegs' : ''}</p>` : afterTransit ? '<p class="day-morning">Ankunft nach einer Nacht unterwegs</p>' : i === 0 ? '<p class="day-morning">Anreisetag</p>' : ''}
+    ${i === 0 && !morningPlace(0) ? '<p class="day-morning">Anreisetag</p>' : ''}
     ${t ? `<p class="day-morning selectable transfer-row${ui.sel === `transfer:${d.id}` ? ' is-selected' : ''}" data-action="select" data-sel="transfer:${d.id}" data-day="${d.id}" role="button" tabindex="0">Ortswechsel nach <strong>${esc(t.to.name)}</strong> · <span data-stat="transfer:${d.id}"></span></p>` : ''}
     <div class="ex-list">
       ${d.trips.map((ex) => (draftHere && ui.draft.exId === ex.id ? editorHTML(d, i) : exHTML(d, i, ex))).join('')}
       ${draftHere && !ui.draft.exId ? editorHTML(d, i) : ''}
-      ${draftHere ? '' : `<button class="add-btn" data-action="add-ex" data-day="${d.id}">+ Ausflug</button>`}
-    </div>
-    <div>
-      <div class="field-label">Übernachtung${lastDay && !d.night && !d.transit ? ' (leer lassen am Abreisetag)' : ''}</div>
-      ${d.transit
-        ? journeyHTML(d, i)
-        : `${d.night && !picker(`night:${d.id}`).editing
-          ? `<div class="selectable stay-select${ui.sel === `stay:${d.id}` ? ' is-selected' : ''}" data-action="select" data-sel="stay:${d.id}" data-day="${d.id}" role="button" tabindex="0">${pickerHTML(`night:${d.id}`, d.night)}</div>${nightsHTML(d, i)}`
-          : pickerHTML(`night:${d.id}`, d.night, 'Unterkunft oder Ort suchen')}${d.night ? '' : `<button class="link-btn transit-btn" data-action="toggle-transit" data-day="${d.id}">Diese Nacht bin ich unterwegs</button>`}`}
+      ${draftHere ? '' : `<button class="add-btn" data-action="add-ex" data-day="${d.id}">+ Ausflug oder Weiterreise</button>`}
     </div>
     ${journalHTML(d)}
   </section>`;
@@ -1124,12 +1220,14 @@ function render() {
   const title = $('#trip-title');
   if (document.activeElement !== title) title.value = state.title;
   $('#start-date').value = state.startDate;
-  $('#days').innerHTML = state.days.map((d, i) => gapHTML(i) + dayHTML(d, i)).join('');
+  const last = state.days.length - 1;
+  $('#days').innerHTML = gapHTML(0) + edgeNightHTML(-1) + state.days.map((d, i) => dayHTML(d, i)
+    + (i < last ? nightHTML(i) + gapHTML(i + 1) : edgeNightHTML(i))).join('');
 
-  const nights = state.days.filter((d) => d.night || d.transit).length;
+  const nights = state.days.filter(hasNight).length + (hasNight(state.preNight) ? 1 : 0);
   const stays = stayPins().length;
   const trips = state.days.reduce((n, d) => n + d.trips.length, 0);
-  $('#trip-summary').textContent = `${state.days.length} Tage · ${nights} ${nights === 1 ? 'Nacht' : 'Nächte'} · ${stays} ${stays === 1 ? 'Unterkunft' : 'Unterkünfte'} · ${trips} ${trips === 1 ? 'Ausflug' : 'Ausflüge'}`;
+  $('#trip-summary').textContent = `${state.days.length} Tage · ${nights} ${nights === 1 ? 'Nacht' : 'Nächte'} · ${stays} ${stays === 1 ? 'Unterkunft' : 'Unterkünfte'} · ${trips} ${trips === 1 ? 'Trip' : 'Trips'}`;
 
   $('#today-btn').hidden = todayIndex() < 0;
   $('#pick-banner').hidden = !ui.mapPick;
@@ -1567,8 +1665,12 @@ function newDraft(dayId, ex) {
     exId: ex ? ex.id : null,
     error: null,
     data: ex
-      ? { name: ex.name, fromMode: ex.from ? 'custom' : 'stay', from: clone(ex.from), via: clone(ex.via), to: clone(ex.to), roundtrip: ex.roundtrip, mode: ex.mode }
-      : { name: '', fromMode: 'stay', from: null, via: [], to: null, roundtrip: true, mode: 'car' },
+      ? {
+        name: ex.name, fromMode: ex.from ? 'custom' : 'stay', from: clone(ex.from),
+        via: ex.via.map(({ note, ...p }) => p), notes: ex.via.map((p) => p.note || ''),
+        end: ex.end, to: clone(ex.to), mode: ex.mode,
+      }
+      : { name: '', fromMode: 'stay', from: null, via: [null], notes: [''], end: 'start', to: null, mode: 'car' },
   };
 }
 function closeDraft() {
@@ -1603,7 +1705,7 @@ const actions = {
     const d = state.days[i];
     if (state.days.length === 1) return;
     const entries = entriesOf(d.id);
-    if ((d.night || d.trips.length || entries.length) && !confirm(`Tag ${i + 1} mit Unterkunft, Ausflügen${entries.length ? ` und ${entries.length} Tagebucheintrag/-einträgen` : ''} löschen?`)) return;
+    if ((hasNight(d) || d.trips.length || entries.length) && !confirm(`Tag ${i + 1} mit der Nacht danach, Trips${entries.length ? ` und ${entries.length} Tagebucheintrag/-einträgen` : ''} löschen?`)) return;
     entries.forEach((e) => e.photos.forEach(dropPhoto));
     state.journal = state.journal.filter((e) => e.dayId !== d.id);
     if (ui.jdraft?.dayId === d.id) closeEntryDraft();
@@ -1619,11 +1721,32 @@ const actions = {
     $('#days').lastElementChild?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   },
   'toggle-transit'(el) {
-    const d = dayById(el.dataset.day);
-    d.transit = !d.transit;
-    d.journey = d.transit ? normalizeJourney(null) : null;
-    if (d.transit) d.night = null;
-    ui.pickers = Object.fromEntries(Object.entries(ui.pickers).filter(([k]) => !k.endsWith(`:${d.id}`)));
+    const id = el.dataset.night;
+    const n = nightById(id);
+    n.transit = !n.transit;
+    n.journey = n.transit ? normalizeJourney(null) : null;
+    if (n.transit) n.night = null;
+    ui.pickers = Object.fromEntries(Object.entries(ui.pickers).filter(([k]) => !k.endsWith(`:${id}`)));
+    save(); render(); drawMap(false);
+  },
+  'add-night'(el) {
+    const id = el.dataset.night;
+    if (id === PRE) {
+      state.preNight = normalizeNight(null);
+      save();
+    } else {
+      ui.openNight = id; // Nacht nach dem letzten Tag: erst beim Eintragen gespeichert
+    }
+    render();
+    document.querySelector(`[data-picker="night:${id}"]`)?.focus();
+  },
+  'remove-night'(el) {
+    const id = el.dataset.night;
+    if (id === PRE) state.preNight = null;
+    else Object.assign(dayById(id), normalizeNight(null));
+    if (ui.openNight === id) ui.openNight = null;
+    if (ui.sel === `stay:${id}` || ui.sel === `journey:${id}`) ui.sel = null;
+    ui.pickers = Object.fromEntries(Object.entries(ui.pickers).filter(([k]) => !k.endsWith(`:${id}`)));
     save(); render(); drawMap(false);
   },
   'insert-day'(el) {
@@ -1635,8 +1758,8 @@ const actions = {
     save(); render(); drawMap(false);
   },
   'nights-more'(el) {
-    const i = dayIndex(el.dataset.day);
-    const d = state.days[i];
+    const i = nightIndex(el.dataset.night);
+    const d = nightAt(i);
     const k = i + stayRunAt(i);
     const next = state.days[k];
     // Freie Nacht am nächsten Tag belegen, sonst einen Tag einschieben (spätere Unterkünfte bleiben, wie sie sind).
@@ -1645,7 +1768,7 @@ const actions = {
     save(); render(); drawMap(false);
   },
   'nights-less'(el) {
-    const i = dayIndex(el.dataset.day);
+    const i = nightIndex(el.dataset.night);
     const n = stayRunAt(i);
     if (n <= 1) return;
     state.days[i + n - 1].night = null;
@@ -1671,19 +1794,20 @@ const actions = {
   'save-ex'() {
     const { dayId, exId, data } = ui.draft;
     const i = dayIndex(dayId);
-    if (!data.to) { ui.draft.error = 'Wähle ein Ziel für den Ausflug.'; render(); return; }
-    if (data.fromMode === 'custom' && !data.from) { ui.draft.error = 'Wähle einen Startort oder starte bei der Unterkunft.'; render(); return; }
-    if (data.fromMode === 'stay' && !stayPlaceFor(i)) {
-      ui.draft.error = 'Für diesen Tag gibt es noch keine Unterkunft. Trag eine Übernachtung ein oder wähle „Anderer Ort“ als Start.';
-      render(); return;
-    }
+    const via = data.via.map((p, k) => p && (data.notes[k]?.trim() ? { ...p, note: data.notes[k].trim().slice(0, 200) } : p)).filter(Boolean);
+    const fail = (msg) => { ui.draft.error = msg; render(); };
+    if (data.fromMode === 'custom' && !data.from) return fail('Wähle einen Startort oder starte bei der Unterkunft.');
+    if (data.fromMode === 'stay' && !stayPlaceFor(i)) return fail('Für diesen Tag gibt es noch keine Unterkunft. Trag eine Übernachtung ein oder wähle „Anderer Ort“ als Start.');
+    if (data.end === 'start' && !via.length) return fail('Ein Ausflug zurück zum Start braucht mindestens einen Stopp.');
+    if (data.end === 'place' && !data.to) return fail('Wähle, wo der Trip endet.');
+    if (data.end === 'night' && !eveningPlace(i)) return fail('Für diese Nacht ist noch keine Unterkunft eingetragen. Trag sie zuerst ein oder wähle „Anderer Ort“ als Ende.');
     const ex = {
       id: exId || uid(),
       name: data.name.trim(),
       from: data.fromMode === 'custom' ? data.from : null,
-      via: data.via.filter(Boolean),
-      to: data.to,
-      roundtrip: data.roundtrip,
+      via,
+      end: data.end,
+      to: data.end === 'place' ? data.to : null,
       mode: data.mode,
     };
     const d = state.days[i];
@@ -1694,11 +1818,13 @@ const actions = {
   },
   'add-via'() {
     ui.draft.data.via.push(null);
+    ui.draft.data.notes.push('');
     render();
     document.querySelector(`[data-picker="draft:via:${ui.draft.data.via.length - 1}"]`)?.focus();
   },
   'remove-via'(el) {
     ui.draft.data.via.splice(Number(el.dataset.idx), 1);
+    ui.draft.data.notes.splice(Number(el.dataset.idx), 1);
     ui.pickers = Object.fromEntries(Object.entries(ui.pickers).filter(([k]) => !k.startsWith('draft:via:')));
     if (ui.mapPick?.startsWith('draft:via:')) ui.mapPick = null;
     render();
@@ -1997,6 +2123,7 @@ document.addEventListener('input', (e) => {
   const t = e.target;
   if (t.dataset.picker) picker(t.dataset.picker).query = t.value;
   else if (t.dataset.draft === 'name' && ui.draft) ui.draft.data.name = t.value;
+  else if (t.dataset.draftNote !== undefined && ui.draft) ui.draft.data.notes[Number(t.dataset.draftNote)] = t.value;
   else if (t.dataset.jdraft === 'text' && ui.jdraft) ui.jdraft.data.text = t.value;
   else if (t.dataset.jdraft === 'link' && ui.jdraft) ui.jdraft.linkInput = t.value;
   else if (t.id === 'trip-title') { state.title = t.value; save(); }
@@ -2006,16 +2133,19 @@ document.addEventListener('change', (e) => {
   const t = e.target;
   if (t.dataset.draft && ui.draft) {
     const field = t.dataset.draft;
-    if (field === 'roundtrip') ui.draft.data.roundtrip = t.checked;
-    else if (field === 'mode') ui.draft.data.mode = t.value;
+    if (field === 'end') {
+      ui.draft.data.end = t.value;
+      render();
+      if (t.value === 'place') document.querySelector('[data-picker="draft:to"]')?.focus();
+    } else if (field === 'mode') ui.draft.data.mode = t.value;
     else if (field === 'fromMode') {
       ui.draft.data.fromMode = t.value;
       render();
       if (t.value === 'custom') document.querySelector('[data-picker="draft:from"]')?.focus();
     }
   } else if (t.dataset.journeyMode) {
-    const d = dayById(t.dataset.journeyMode);
-    if (d?.journey) { d.journey.mode = t.value; save(); render(); drawMap(false); }
+    const n = nightById(t.dataset.journeyMode);
+    if (n?.journey) { n.journey.mode = t.value; save(); render(); drawMap(false); }
   } else if (t.id === 'start-date' && t.value) {
     state.startDate = t.value; save(); render(); drawMap(false);
   } else if (t.id === 'jdraft-photos' && t.files.length) {
@@ -2146,8 +2276,11 @@ let drag = null;
 function moveDay(from, to) {
   // to = Einfügeposition in der alten Reihenfolge (0 … Anzahl Tage)
   if (to < 0 || to > state.days.length || to === from || to === from + 1) return false;
+  // Die Nächte bleiben an ihrem Platz zwischen den Tagen, nur die Tage wandern.
+  const nights = state.days.map(({ night, transit, journey }) => ({ night, transit, journey }));
   const [d] = state.days.splice(from, 1);
   state.days.splice(to > from ? to - 1 : to, 0, d);
+  state.days.forEach((x, k) => Object.assign(x, nights[k]));
   save(); render(); drawMap(false);
   return true;
 }

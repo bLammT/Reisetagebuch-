@@ -2,11 +2,11 @@
 
 Web-App zum Planen einer Reise auf einer Karte:
 
-- **Übernachtung pro Nacht**: Für jeden Tag trägst du ein, wo du schläfst. Mit „Nächte hier −/+“ legst du mehrere Nächte am selben Ort auf einmal fest. Aufeinanderfolgende Nächte am selben Ort werden auf der Karte zu einem Pin zusammengefasst (z. B. „Meran N1–3“).
+- **Übernachtungen zwischen den Tagen**: Jede Nacht steht als eigene Karte zwischen zwei Tagen (z. B. „Nacht 3 · So 14.06. → Mo 15.06.“). Eine Nacht vor dem ersten und nach dem letzten Tag lässt sich zusätzlich hinzufügen. Mit „Nächte hier −/+“ legst du mehrere Nächte am selben Ort auf einmal fest. Aufeinanderfolgende Nächte am selben Ort werden auf der Karte zu einem Pin zusammengefasst (z. B. „Meran N1–3“).
 - **Nacht unterwegs**: Nachtzug, Nachtbus, Fähre, Flug oder Auto mit Abfahrts- und Ankunftsort. Ohne Abfahrtsort gilt der Ort, an dem man morgens war; am nächsten Morgen startet man am Ankunftsort.
-- **Tage ordnen**: Tage am Griff ⠿ verschieben (Maus, Finger oder Pfeiltasten), „+ Tag einfügen“ zwischen den Tagen und „+ Tag am Anfang“ (dann wird die Anreise einen Tag früher, die übrigen Tage behalten ihr Datum).
-- **Ausflüge pro Tag**: Start (Unterkunft oder anderer Ort), beliebig viele Zwischenstopps, Ziel, Rundtour ja/nein, Verkehrsmittel (Auto, Fahrrad, zu Fuß).
-- **Ortswechsel**: Ziehst du in eine neue Unterkunft um, zeichnet die App die Fahrt dorthin automatisch ein. Das passiert nicht, wenn an diesem Tag schon ein einfacher Ausflug (keine Rundtour) bei der neuen Unterkunft endet.
+- **Tage ordnen**: Tage am Griff ⠿ verschieben (Maus, Finger oder Pfeiltasten; die Übernachtungen bleiben dabei an ihrem Platz zwischen den Tagen), „+ Tag einfügen“ zwischen den Tagen und „+ Tag am Anfang“ (dann wird die Anreise einen Tag früher, die übrigen Tage behalten ihr Datum).
+- **Trips pro Tag** (Ausflüge und Weiterreisen): Start (Unterkunft oder anderer Ort), beliebig viele Stopps mit Notiz (z. B. „ATV fahren + Rafting“), Ende „zurück zum Start“, „zur Unterkunft der Nacht“ oder ein anderer Ort, dazu das Verkehrsmittel.
+- **Ortswechsel**: Ziehst du in eine neue Unterkunft um, zeichnet die App die Fahrt dorthin automatisch ein. Das passiert nicht, wenn an diesem Tag schon ein Trip bei der neuen Unterkunft endet (Weiterreise).
 - **Karte**: Jeder Tag hat eine eigene Farbe. Ein Klick auf „Tag N“ hebt den Tag hervor und zoomt hin. Strecke und Fahrzeit stehen bei jedem Ausflug. Beim Scrollen der Liste zeigt die Karte den Tag, der gerade oben steht (abschaltbar mit „Folgt der Liste“). Ein Klick auf Linie, Pin oder Eintrag in der Karte springt in der Liste dorthin.
 - **Tagebuch**: pro Tag beliebig viele Einträge mit Text, Fotos, Links (z. B. ein geteiltes Google-Fotos-Album) und optionalem Ort („Mein Standort“ per GPS). Einträge mit Ort erscheinen als ✎-Pin auf der Karte.
 - **Speichern**: automatisch im Browser (Reiseplan und Texte in localStorage, Fotos verkleinert in IndexedDB). „Exportieren“ erstellt eine Sicherung inklusive Fotos; „Importieren“ stellt sie wieder her. Wird nur ein Reiseplan ohne Tagebuch importiert, bleibt das vorhandene Tagebuch erhalten.

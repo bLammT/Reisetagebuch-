@@ -219,9 +219,19 @@ button, input, select { font: inherit; color: inherit; }
   border: 1px solid var(--line); border-radius: 7px; padding: 4px 9px; cursor: pointer;
 }
 .seg label:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
+.vias { list-style: none; margin: 0 0 4px; padding: 0; display: grid; gap: 8px; }
 .via-item { display: flex; gap: 6px; align-items: flex-start; }
-.via-item > :first-child { flex: 1; min-width: 0; }
-.vias { display: grid; gap: 6px; }
+.via-n {
+  flex: none; width: 22px; height: 22px; margin-top: 5px; border-radius: 50%;
+  display: grid; place-items: center; background: var(--day, var(--accent)); color: #fff;
+  font: 600 12px/1 var(--font-mono);
+}
+.via-fields { flex: 1; min-width: 0; display: grid; gap: 4px; }
+.via-note {
+  border: 1px solid var(--line); border-radius: 7px; padding: 5px 9px; background: var(--field);
+  color: var(--ink); font-size: 14px; width: 100%;
+}
+.ex-note { color: var(--muted); font-style: italic; }
 .check { display: flex; align-items: center; gap: 8px; font-size: 14px; cursor: pointer; }
 .check input { width: 16px; height: 16px; accent-color: var(--accent); }
 .editor-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
@@ -418,11 +428,12 @@ button, input, select { font: inherit; color: inherit; }
   border-radius: 999px; padding: 2px 10px; font-size: 12px; font-weight: 500; cursor: pointer;
   opacity: 0; transition: opacity .15s;
 }
-.day-gap:first-child .gap-btn { top: 12px; transform: translateX(-50%); }
+.day-gap:first-child { height: auto; display: flex; justify-content: center; padding: 10px var(--gutter) 6px; }
+.day-gap:first-child .gap-btn { position: static; transform: none; }
 .days:hover .gap-btn, .gap-btn:focus-visible { opacity: 1; }
 .gap-btn:hover { border-color: var(--accent); background: var(--accent-soft); }
 @media (hover: none) { .gap-btn { opacity: 1; } }
-.day-gap:first-child + .day { padding-top: 40px; }
+
 .drag-handle {
   border: 0; background: none; color: var(--muted); cursor: grab; touch-action: none;
   font-size: 18px; line-height: 1; padding: 4px 2px; margin-left: -6px; border-radius: 6px; flex: none;
@@ -463,3 +474,20 @@ body.is-dragging-day, body.is-dragging-day * { cursor: grabbing !important; user
 .link-list li { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 14px; }
 .link-list a { color: var(--accent); font-weight: 600; flex: none; }
 .link-url { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 12px; }
+
+/* ---------- Übernachtung zwischen den Tagen ---------- */
+.night {
+  display: grid; gap: 8px; margin: 0 var(--gutter); padding: 10px 12px 12px;
+  border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg);
+  position: relative; top: -1px;
+}
+.day + .night, .night-add { margin-top: 10px; }
+.night + .day-gap + .day, .night + .day { margin-top: 10px; border-top: 1px solid var(--line); }
+.night.is-empty { border-style: dashed; }
+.night-head { display: flex; align-items: baseline; gap: 8px; }
+.night-ico { color: var(--accent); font-size: 14px; }
+.night-n { font: 700 14px/1.1 var(--font-display); }
+.night-date { font: 12px var(--font-mono); color: var(--muted); flex: 1; }
+.night-head .icon-btn { align-self: center; }
+.night-add { padding: 0 var(--gutter); margin-bottom: 10px; }
+.night .transit-btn { margin-top: 0; }
