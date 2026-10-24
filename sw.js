@@ -1,13 +1,14 @@
 // Service Worker: hält die App-Dateien vor, damit die Reisekarte auch ohne Netz startet.
 // Strategie "erst Netz, dann Cache": Neue Versionen kommen sofort an, offline gilt der letzte Stand.
-const CACHE = 'reisekarte-v5';
+// Beim Netz immer nachfragen (no-cache), sonst liefert der Browser-Cache bis zu einige Minuten lang die alte Version.
+const CACHE = 'reisekarte-v6';
 const SHELL = [
   './', 'index.html', 'styles.css', 'app.js', 'manifest.webmanifest', 'icon.svg', 'icon-192.png', 'icon-512.png',
   'vendor/leaflet/leaflet.js', 'vendor/leaflet/leaflet.css', 'vendor/pocketbase/pocketbase.umd.js',
 ];
 
 self.addEventListener('install', (event) => {
-  event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(SHELL)));
+  event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(SHELL.map((u) => new Request(u, { cache: 'reload' })))));
   self.skipWaiting();
 });
 
@@ -23,8 +24,9 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
   if (event.request.method !== 'GET' || url.origin !== self.location.origin) return;
   event.respondWith(
-    fetch(event.request)
+    fetch(url.href, { cache: 'no-cache', credentials: 'same-origin' })
       .then((res) => {
+        if (!res.ok) return res;
         const copy = res.clone();
         caches.open(CACHE).then((cache) => cache.put(event.request, copy));
         return res;

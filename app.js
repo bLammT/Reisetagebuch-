@@ -23,6 +23,7 @@
  *           mit Online-Sync zusätzlich auf dem Server (Tabelle photos, Schlüssel = photoId).
  */
 
+const APP_VERSION = '2026-10-24';
 const STORAGE_KEY = 'reisekarte.trip.v1';
 const ROUTE_CACHE_KEY = 'reisekarte.routes.v1';
 
@@ -2351,6 +2352,7 @@ document.addEventListener('keydown', (e) => {
   if (moveDay(i, e.key === 'ArrowUp' ? i - 1 : i + 2)) document.querySelector(`[data-drag="${h.dataset.drag}"]`)?.focus();
 });
 
+$('#app-version').textContent = `Version ${APP_VERSION}`;
 render();
 drawMap(true);
 renderFollowBtn();
@@ -2380,5 +2382,5 @@ navigator.storage?.persist?.().catch(() => {});
 
 // Offline-Start und Installation auf dem Startbildschirm.
 if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
-  navigator.serviceWorker.register('sw.js').catch((err) => console.warn('Service Worker:', err.message));
+  navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).catch((err) => console.warn('Service Worker:', err.message));
 }
