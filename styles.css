@@ -625,3 +625,8 @@ body.is-resizing #map { pointer-events: none; }
   .seg label { padding: 7px 11px; }
   .day-head { min-height: 40px; }
 }
+
+.rename-btn { font-size: 15px; color: var(--muted); }
+.rename-btn:hover { color: var(--accent); background: var(--accent-soft); }
+.is-readonly .place [data-action="rename-place"] { display: none !important; }
+.leaflet-control-layers { font: 13px var(--font-body); }

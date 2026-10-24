@@ -13,6 +13,7 @@ Web-App zum Planen einer Reise auf einer Karte:
 - **Übersicht**: Tage lassen sich einzeln oder über das Menü ⋯ alle auf einmal einklappen (dann steht nur eine Zeile pro Tag da). Weitere Nächte am selben Ort stehen als eine Zeile. Export, Import, Beispielreise und „Neu anfangen“ sind im Menü ⋯.
 - **Speichern**: automatisch im Browser (Reiseplan und Texte in localStorage, Fotos verkleinert in IndexedDB). „Exportieren“ erstellt eine Sicherung inklusive Fotos; „Importieren“ stellt sie wieder her. Wird nur ein Reiseplan ohne Tagebuch importiert, bleibt das vorhandene Tagebuch erhalten.
 - **Online-Sync (optional)**: Mit eigenem Server (Home-Assistant-Add-on „Reisetagebuch Server“, siehe [bLammT/ha-addons](https://github.com/bLammT/ha-addons)) und Login ist die Reise auf allen Geräten gleich und lässt sich mit Mitreisenden teilen. Änderungen gehen kurz verzögert an den Server; offline wird später nachgeholt. Wurde die Reise woanders geändert, während hier noch ungespeicherte Änderungen liegen, fragt die App, welcher Stand gilt. Fotos werden mit hochgeladen (ab Add-on-Version 0.2.0) und auf anderen Geräten bei Bedarf geladen.
+- **Ortsnamen und Suche**: Die Suche fragt Photon und Nominatim, bevorzugt Treffer im sichtbaren Kartenausschnitt und zeigt Namen auf Deutsch oder Englisch (der Name in Landesschrift steht zusätzlich in der Beschreibung, z. B. zum Zeigen im Taxi). Ins Suchfeld lassen sich auch Koordinaten und Links aus Google Maps oder Apple Karten einfügen. Mit ✎ benennst du jeden Ort selbst, etwa einen per „Karte“ gesetzten Punkt. Der Kartenstil ist umschaltbar (oben links): deutsch/lateinisch beschriftet oder in Landessprache.
 - **Teilen**: Wer eine Online-Reise angelegt hat, lädt unter „Online-Sync → Teilen“ Personen per E-Mail ein, zum Mitbearbeiten oder nur zum Lesen (ab Add-on-Version 0.3.0). Gibt es noch kein Konto, wird es mit einem Start-Passwort angelegt. Die App erzeugt einen Einladungstext mit Link, der die Server-Adresse schon enthält (`…/?server=https://…`). Wer nur lesen darf, sieht alles, kann aber nichts ändern.
 - **Einstieg und Bedienung**: Bei einer leeren Reise erklärt ein Hinweis die ersten Schritte. Die Legende auf der Karte lässt sich einklappen. Auf Touch-Geräten sind Knöpfe und Griffe größer.
 - **Handy**: installierbar auf dem Startbildschirm (PWA) und startet auch offline. Die Karte selbst braucht Internet.
@@ -50,8 +51,9 @@ dann unter *Settings → Pages* „Deploy from a branch“, Branch `main`, Ordne
 
 | Zweck | Dienst | Hinweis |
 |---|---|---|
-| Kartenkacheln | `tile.openstreetmap.org` | Laut OSM-Tile-Policy nicht für Apps mit viel Traffic gedacht |
+| Kartenkacheln | `tile.openstreetmap.de` (deutsche Beschriftung), `tile.openstreetmap.org` (Landessprache) | Öffentliche Dienste, nicht für Apps mit viel Traffic gedacht |
 | Ortssuche | Nominatim (`nominatim.openstreetmap.org`) | Höchstens 1 Anfrage pro Sekunde, keine Massenabfragen. Die App hält diese Grenze ein |
+| Ortssuche (Restaurants, Hotels …) | Photon (`photon.komoot.io`) | Öffentlicher Dienst mit Fair-Use-Regeln; eine Anfrage pro Suche |
 | Online-Sync (optional) | eigener PocketBase-Server | Nur wenn im Dialog „Online-Sync“ eine Adresse eingetragen ist. Muss über `https://` erreichbar sein |
 | Routen | FOSSGIS-OSRM (`routing.openstreetmap.de`, Profile `routed-car`, `routed-bike`, `routed-foot`) | Öffentlicher Dienst mit Fair-Use-Regeln. Antwortet er nicht, zeigt die App die Luftlinie (gestrichelt) |
 

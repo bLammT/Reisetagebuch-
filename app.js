@@ -23,12 +23,13 @@
  *           mit Online-Sync zusätzlich auf dem Server (Tabelle photos, Schlüssel = photoId).
  */
 
-const APP_VERSION = '2026-10-24.4';
+const APP_VERSION = '2026-10-24.5';
 const STORAGE_KEY = 'reisekarte.trip.v1';
 const ROUTE_CACHE_KEY = 'reisekarte.routes.v1';
 
 // Externe Dienste (öffentliche Instanzen, nur für geringe Last gedacht – siehe README).
 const NOMINATIM = 'https://nominatim.openstreetmap.org';
+const PHOTON = 'https://photon.komoot.io';
 const ROUTING = 'https://routing.openstreetmap.de';
 const PROFILES = {
   car: { label: 'Auto', path: 'routed-car' },
@@ -565,10 +566,18 @@ const blobToDataURL = (blob) => new Promise((resolve, reject) => {
 /* ---------------------------------------------------------------- Karte */
 
 const map = L.map('map', { zoomControl: true }).setView([47.3, 11], 6);
-L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-  maxZoom: 19,
-  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>-Mitwirkende · Routen: <a href="https://routing.openstreetmap.de/">FOSSGIS</a>',
-}).addTo(map);
+// Kartenstil: Der deutsche OSM-Stil beschriftet mit deutschen bzw. lateinischen Namen, der Standard in Landessprache.
+const TILES_KEY = 'reisekarte.tiles.v1';
+const OSM_ATTR = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>-Mitwirkende · Routen: <a href="https://routing.openstreetmap.de/">FOSSGIS</a>';
+const baseLayers = {
+  'Deutsch / lateinische Schrift': L.tileLayer('https://tile.openstreetmap.de/{z}/{x}/{y}.png', {
+    maxZoom: 18, attribution: `${OSM_ATTR} · Stil: <a href="https://www.openstreetmap.de/">OSM Deutschland</a>`,
+  }),
+  'Landessprache (OSM Standard)': L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: OSM_ATTR }),
+};
+(baseLayers[loadJSON(TILES_KEY, '')] || Object.values(baseLayers)[0]).addTo(map);
+L.control.layers(baseLayers, null, { position: 'topleft' }).addTo(map);
+map.on('baselayerchange', (e) => saveJSON(TILES_KEY, e.name));
 const routeLayer = L.layerGroup().addTo(map);
 const markerLayer = L.layerGroup().addTo(map);
 
@@ -818,6 +827,75 @@ async function nominatimFetch(path) {
   return res.json();
 }
 
+// Bevorzugter Name: Deutsch, Englisch, internationaler Name, sonst der Name vor Ort.
+const NON_LATIN = /[^\u0000-\u024F\u1E00-\u1EFF\s\d\p{P}\p{S}]/u;
+function pickName(nd, fallback) {
+  const d = nd || {};
+  return d['name:de'] || d['name:en'] || d.int_name || d['name:latin'] || d.name || fallback || '';
+}
+// Name vor Ort (z. B. auf Thai), wenn er anders lautet: steht in der Beschreibung, etwa zum Zeigen im Taxi.
+function localName(nd, chosen, label = '') {
+  return nd?.name && nd.name !== chosen && !label.includes(nd.name) ? nd.name : '';
+}
+
+// Suche auf den sichtbaren Kartenausschnitt beziehen (ab Länder-Zoom).
+function searchBias() {
+  if (map.getZoom() < 5) return null;
+  return { b: map.getBounds().pad(0.5), c: map.getCenter() };
+}
+
+async function nominatimSearch(q, bias) {
+  const vb = bias ? `&viewbox=${bias.b.getWest().toFixed(4)},${bias.b.getNorth().toFixed(4)},${bias.b.getEast().toFixed(4)},${bias.b.getSouth().toFixed(4)}` : '';
+  const data = await nominatimFetch(`/search?format=jsonv2&limit=6&namedetails=1&accept-language=de,en&q=${encodeURIComponent(q)}${vb}`);
+  return data.map((r) => {
+    const name = pickName(r.namedetails, String(r.display_name).split(',')[0]);
+    return { name, label: [localName(r.namedetails, name, r.display_name), r.display_name].filter(Boolean).join(' · '), lat: Number(r.lat), lon: Number(r.lon) };
+  });
+}
+
+const PLACE_TYPES = {
+  restaurant: 'Restaurant', cafe: 'Café', bar: 'Bar', pub: 'Kneipe', fast_food: 'Imbiss', food_court: 'Essensstände',
+  hotel: 'Hotel', guest_house: 'Gästehaus', hostel: 'Hostel', motel: 'Motel', apartment: 'Ferienwohnung', resort: 'Resort',
+  attraction: 'Sehenswürdigkeit', viewpoint: 'Aussichtspunkt', museum: 'Museum', waterfall: 'Wasserfall',
+  place_of_worship: 'Tempel / Kirche', beach: 'Strand', peak: 'Gipfel', station: 'Bahnhof', aerodrome: 'Flughafen',
+  bus_station: 'Busbahnhof', ferry_terminal: 'Fähranleger', marketplace: 'Markt', city: 'Stadt', town: 'Stadt', village: 'Dorf',
+};
+
+// Photon findet Restaurants, Hotels usw. besser und verzeiht Tippfehler; bevorzugt Treffer nahe der Kartenmitte.
+async function photonSearch(q, bias) {
+  const near = bias ? `&lat=${bias.c.lat.toFixed(4)}&lon=${bias.c.lng.toFixed(4)}` : '';
+  const res = await fetch(`${PHOTON}/api/?q=${encodeURIComponent(q)}&limit=6&lang=en${near}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const data = await res.json();
+  return (data.features || []).map((f) => {
+    const p = f.properties || {};
+    const [lon, lat] = f.geometry?.coordinates || [];
+    const street = [p.street, p.housenumber].filter(Boolean).join(' ');
+    const parts = [PLACE_TYPES[p.osm_value], street, p.district, p.city, p.state, p.country].filter(Boolean);
+    return { name: p.name || street || p.city || 'Ort', label: parts.filter((v, i) => parts.indexOf(v) === i).join(', '), lat: Number(lat), lon: Number(lon) };
+  }).filter((r) => Number.isFinite(r.lat) && Number.isFinite(r.lon));
+}
+
+// Links aus Google Maps (oder Apple Karten) mit Koordinaten im Link.
+function parseMapsLink(q) {
+  if (!/^https?:\/\//i.test(q)) return null;
+  let u;
+  try { u = new URL(q); } catch { return null; }
+  if (/^(maps\.app\.goo\.gl|goo\.gl)$/i.test(u.hostname)) return { short: true };
+  let s = u.href;
+  try { s = decodeURIComponent(s); } catch { /* bleibt kodiert */ }
+  const m = s.match(/!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/) || s.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/)
+    || s.match(/[?&](?:q|query|ll|sll|daddr|destination|center)=(-?\d+\.\d+),\s*(-?\d+\.\d+)/);
+  if (!m) return { noCoords: true };
+  const lat = Number(m[1]), lon = Number(m[2]);
+  if (Math.abs(lat) > 90 || Math.abs(lon) > 180) return { noCoords: true };
+  const place = u.pathname.match(/\/place\/([^/]+)/);
+  const qName = u.searchParams.get('q');
+  let name = place ? place[1].replace(/\+/g, ' ') : qName && !/^-?\d/.test(qName) ? qName : '';
+  try { name = decodeURIComponent(name); } catch { /* bleibt */ }
+  return { name: name || `Punkt ${lat.toFixed(4)}, ${lon.toFixed(4)}`, label: 'Aus einem Karten-Link', lat, lon };
+}
+
 function parseCoords(q) {
   const m = q.match(/^\s*(-?\d{1,2}(?:[.]\d+)?)\s*[,; ]\s*(-?\d{1,3}(?:[.]\d+)?)\s*$/);
   if (!m) return null;
@@ -830,22 +908,35 @@ async function searchPlace(key) {
   const p = picker(key);
   const q = p.query.trim();
   if (!q) { p.error = 'Gib einen Ortsnamen ein.'; render(); return; }
-  const coords = parseCoords(q);
-  if (coords) { p.results = [coords]; p.error = null; render(); focusFirstResult(key); return; }
+  const link = parseMapsLink(q);
+  if (link?.short) {
+    p.results = [];
+    p.error = 'Kurzlinks (maps.app.goo.gl) kann der Browser nicht öffnen. Öffne den Ort in Google Maps, tippe lange auf die Stelle und kopiere die Koordinaten, die oben erscheinen (z. B. 18.7883, 98.9853). Am Computer geht auch die lange Adresse aus der Adresszeile.';
+    render(); return;
+  }
+  if (link?.noCoords) { p.results = []; p.error = 'In diesem Link stehen keine Koordinaten. Kopiere stattdessen die Koordinaten aus der Karten-App (lange auf den Ort tippen).'; render(); return; }
+  const direct = link || parseCoords(q);
+  if (direct) { p.results = [direct]; p.error = null; render(); focusFirstResult(key); return; }
   p.loading = true; p.error = null; p.results = [];
   render();
-  try {
-    const data = await nominatimFetch(`/search?format=jsonv2&limit=5&accept-language=de&q=${encodeURIComponent(q)}`);
-    p.results = data.map((r) => ({
-      name: r.name || String(r.display_name).split(',')[0],
-      label: r.display_name,
-      lat: Number(r.lat),
-      lon: Number(r.lon),
-    }));
-    if (!p.results.length) p.error = 'Nichts gefunden. Versuch es genauer, z. B. mit Ort und Land.';
-  } catch (err) {
-    console.warn('Ortssuche fehlgeschlagen:', err.message);
+  const bias = searchBias();
+  const [ph, no] = await Promise.allSettled([photonSearch(q, bias), nominatimSearch(q, bias)]);
+  const fromPhoton = ph.status === 'fulfilled' ? ph.value : [];
+  const fromNominatim = no.status === 'fulfilled' ? no.value : [];
+  if (ph.status === 'rejected') console.warn('Photon:', ph.reason?.message);
+  if (no.status === 'rejected') console.warn('Nominatim:', no.reason?.message);
+  // Photon zuerst; steht dort nur ein Name in fremder Schrift, den lateinischen Namen von Nominatim nehmen.
+  const results = fromPhoton.map((r) => {
+    if (!NON_LATIN.test(r.name)) return r;
+    const twin = fromNominatim.find((x) => kmBetween(x, r) < 0.15 && !NON_LATIN.test(x.name));
+    return twin ? { ...r, name: twin.name, label: [r.name, r.label].filter(Boolean).join(' · ') } : r;
+  });
+  fromNominatim.forEach((x) => { if (!results.some((r) => kmBetween(r, x) < 0.1)) results.push(x); });
+  p.results = results.slice(0, 8);
+  if (ph.status === 'rejected' && no.status === 'rejected') {
     p.error = 'Die Ortssuche ist gerade nicht erreichbar. Wähle den Ort über „Karte“ oder gib Koordinaten ein (z. B. 46.67, 11.15).';
+  } else if (!p.results.length) {
+    p.error = 'Nichts gefunden. Schieb die Karte in die Gegend und such noch einmal, oder setz den Ort über „Karte“ und gib ihm mit ✎ einen Namen.';
   }
   p.loading = false;
   render();
@@ -857,14 +948,18 @@ function focusFirstResult(key) {
   if (btn) btn.focus();
 }
 
+// Namen für einen per Karte oder Koordinaten gesetzten Ort: ein Restaurant, Hotel usw. an der Stelle, sonst der Ort.
+const POI_CATEGORIES = ['amenity', 'tourism', 'shop', 'leisure', 'historic', 'building', 'railway', 'aeroway', 'natural', 'office', 'craft'];
 async function reverseGeocode(place) {
   try {
-    const r = await nominatimFetch(`/reverse?format=jsonv2&zoom=14&accept-language=de&lat=${place.lat}&lon=${place.lon}`);
+    const r = await nominatimFetch(`/reverse?format=jsonv2&zoom=18&namedetails=1&accept-language=de,en&lat=${place.lat}&lon=${place.lon}`);
     const a = r.address || {};
-    const name = r.name || a.village || a.town || a.city || a.hamlet || a.suburb || String(r.display_name || '').split(',')[0];
-    if (!name) return;
+    const poi = POI_CATEGORIES.includes(r.category) && r.name;
+    const locality = a.village || a.town || a.city || a.hamlet || a.suburb || a.county;
+    const name = poi ? pickName(r.namedetails, r.name) : locality || pickName(r.namedetails, String(r.display_name || '').split(',')[0]);
+    if (!name || !/^Punkt /.test(place.name)) return; // inzwischen selbst benannt: nicht überschreiben
     place.name = name;
-    place.label = r.display_name || place.label;
+    place.label = [poi ? localName(r.namedetails, name, r.display_name) : '', r.display_name || place.label].filter(Boolean).join(' · ');
     save();
     render();
     drawMap(false);
@@ -920,11 +1015,12 @@ function tripTitle(i, ex) {
   return end ? `Nach ${end.name}` : 'Weiterreise';
 }
 
-function pickerHTML(key, place, placeholder = 'Ort suchen, z. B. Meran') {
+function pickerHTML(key, place, placeholder = 'Ort, Restaurant, Koordinaten oder Karten-Link') {
   const p = picker(key);
   if (place && !p.editing) {
     return `<div class="place">
       <div class="place-text"><span class="place-name">${esc(place.name)}</span><span class="place-label">${esc(place.label || `${place.lat.toFixed(4)}, ${place.lon.toFixed(4)}`)}</span></div>
+      <button class="icon-btn rename-btn" data-action="rename-place" data-key="${key}" aria-label="Namen ändern" title="Namen ändern">✎</button>
       <button class="link-btn" data-action="edit-place" data-key="${key}">Ändern</button>
       <button class="icon-btn" data-action="clear-place" data-key="${key}" aria-label="Ort entfernen" title="Ort entfernen">×</button>
     </div>`;
@@ -2017,7 +2113,27 @@ const actions = {
   'pick-result'(el) {
     const p = picker(el.dataset.key);
     const r = p.results[Number(el.dataset.idx)];
-    if (r) setPlace(el.dataset.key, { name: r.name, label: r.label, lat: r.lat, lon: r.lon });
+    if (!r) return;
+    const place = { name: r.name, label: r.label, lat: r.lat, lon: r.lon };
+    setPlace(el.dataset.key, place);
+    if (/^Punkt /.test(place.name)) reverseGeocode(place);
+  },
+  'rename-place'(el) {
+    const key = el.dataset.key;
+    const place = placeRef(key).get();
+    if (!place) return;
+    const name = prompt('Name des Ortes', place.name)?.trim().slice(0, 120);
+    if (!name || name === place.name) return;
+    if (key.startsWith('night:')) {
+      // Alle Nächte an derselben Stelle mit demselben Namen umbenennen (sonst stünde „weiter in …“ mit altem Namen da).
+      for (let k = -1; k < state.days.length; k++) {
+        const n = nightAt(k);
+        if (n?.night && samePlace(n.night, place) && n.night.name === place.name) n.night = { ...n.night, name };
+      }
+      save(); render(); drawMap(false);
+    } else {
+      setPlace(key, { ...place, name });
+    }
   },
   'edit-place'(el) {
     const p = picker(el.dataset.key);
