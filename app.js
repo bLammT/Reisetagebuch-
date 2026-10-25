@@ -23,7 +23,7 @@
  *           mit Online-Sync zusätzlich auf dem Server (Tabelle photos, Schlüssel = photoId).
  */
 
-const APP_VERSION = '2026-10-24.5';
+const APP_VERSION = '2026-10-25.1';
 const STORAGE_KEY = 'reisekarte.trip.v1';
 const ROUTE_CACHE_KEY = 'reisekarte.routes.v1';
 
@@ -53,6 +53,20 @@ const uid = () => Math.random().toString(36).slice(2, 10);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const clone = (v) => JSON.parse(JSON.stringify(v));
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+// Kurze Meldung unten am Bildschirm (Fehler bleiben länger stehen).
+let toastTimer = null;
+function showToast(msg, isError = false) {
+  const t = document.getElementById('toast');
+  if (!t) return;
+  t.textContent = msg;
+  t.classList.toggle('is-error', isError);
+  t.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { t.hidden = true; }, isError ? 9000 : 4000);
+}
+window.addEventListener('error', (e) => { if (e.message) showToast(`Da ist etwas schiefgegangen: ${e.message}`, true); });
+window.addEventListener('unhandledrejection', (e) => showToast(`Da ist etwas schiefgegangen: ${e.reason?.message || e.reason}`, true));
 
 function loadJSON(key, fallback) {
   try {
@@ -199,7 +213,6 @@ const sync = {
   pb: null, // PocketBase-Client, sobald eine Server-Adresse eingetragen ist
   methods: null, // Anmeldearten des Servers
   trips: null, // Liste der Online-Reisen zur Auswahl
-  conflict: null, // neuerer Server-Datensatz, während hier ungespeicherte Änderungen liegen
   error: null, offline: false, busy: false, pushing: false, pushAgain: false, timer: null,
   version: 0, // zählt lokale Änderungen, damit eine Änderung während des Hochladens nicht verloren geht
 };
@@ -1398,6 +1411,7 @@ function render() {
   updateStats();
   hydratePhotos($('#days'));
   updateRetryBtn();
+  if (ui.jdraft) persistDraft();
 }
 // „Routen neu laden“ nur zeigen, wenn eine Route fehlgeschlagen ist.
 function updateRetryBtn() {
@@ -1421,9 +1435,28 @@ function newEntryDraft(dayId, entry) {
     added: [], removed: [], error: null, busy: false, locating: false,
   };
 }
+// Angefangener Tagebucheintrag wird laufend gesichert (z. B. falls das Handy die Seite beim Fotoauswählen neu lädt).
+const DRAFT_KEY = 'reisekarte.draft.v1';
+function persistDraft() {
+  const jd = ui.jdraft;
+  saveJSON(DRAFT_KEY, jd && { dayId: jd.dayId, entryId: jd.entryId, data: jd.data, added: jd.added, removed: jd.removed, linkInput: jd.linkInput });
+}
+function restoreDraft() {
+  const d = loadJSON(DRAFT_KEY, null);
+  if (!d || !dayById(d.dayId) || readOnly()) { saveJSON(DRAFT_KEY, null); return false; }
+  ui.jdraft = {
+    dayId: d.dayId, entryId: state.journal.some((e) => e.id === d.entryId) ? d.entryId : null,
+    data: { text: '', place: null, photos: [], links: [], ...d.data },
+    added: d.added || [], removed: d.removed || [], linkInput: d.linkInput || '', error: null, busy: false, locating: false,
+  };
+  ui.collapsed.delete(d.dayId);
+  return true;
+}
+
 function closeEntryDraft(keepPhotos) {
   if (ui.jdraft && !keepPhotos) ui.jdraft.added.forEach(forgetPhoto);
   ui.jdraft = null;
+  saveJSON(DRAFT_KEY, null);
   ui.pickers = Object.fromEntries(Object.entries(ui.pickers).filter(([k]) => !k.startsWith('jdraft:')));
   if (ui.mapPick?.startsWith('jdraft:')) ui.mapPick = null;
 }
@@ -1475,7 +1508,8 @@ function setRole(rec) {
 function unlinkTrip() {
   clearTimeout(sync.timer);
   Object.assign(syncCfg, { tripId: null, tripTitle: '', remoteUpdated: null, dirty: false, role: 'owner' });
-  sync.conflict = null; sync.trips = null;
+  sync.trips = null;
+  saveJSON(BASE_KEY, null);
   Object.assign(share, { people: null, unsupported: false, needsPassword: false, invite: null, copied: false, error: null });
   resetPhotoSync();
   saveSync();
@@ -1698,34 +1732,107 @@ function handleSyncError(err) {
   }
 }
 
+/* Zusammenführen: Wurde die Reise woanders geändert, während hier ungespeicherte Änderungen liegen,
+   werden beide Stände zusammengeführt (Drei-Wege-Abgleich gegen den zuletzt gemeinsamen Stand „base“).
+   Je Tagebucheintrag, Tag, Trip und Feld: nur eine Seite geändert → diese; beide → dieses Gerät.
+   Neue Einträge von beiden Seiten bleiben erhalten. */
+
+const BASE_KEY = 'reisekarte.base.v1';
+function saveBase(data) {
+  saveJSON(BASE_KEY, { tripId: syncCfg.tripId, data });
+}
+function loadBase() {
+  const b = loadJSON(BASE_KEY, null);
+  return b && b.tripId === syncCfg.tripId ? b.data : null;
+}
+
+const same = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+const pick3 = (base, mine, theirs) => (same(mine, theirs) || !same(base, mine) ? mine : theirs);
+
+function mergeList(base = [], mine = [], theirs = [], mergeItem = pick3) {
+  const B = new Map(base.map((x) => [x.id, x]));
+  const M = new Map(mine.map((x) => [x.id, x]));
+  const T = new Map(theirs.map((x) => [x.id, x]));
+  const ids = (l) => l.map((x) => x.id).join();
+  // Reihenfolge von der Seite, die sie geändert hat (sonst vom Server).
+  const lead = ids(mine) !== ids(base) ? mine : theirs;
+  const other = lead === mine ? theirs : mine;
+  const out = [];
+  const seen = new Set();
+  const take = (id) => {
+    seen.add(id);
+    const b = B.get(id), m = M.get(id), t = T.get(id);
+    if (m && t) return mergeItem(b, m, t);
+    const only = m || t;
+    // Nur auf einer Seite: neu (behalten) oder auf der anderen Seite gelöscht (weg, außer hier inzwischen geändert).
+    return !b || !same(b, only) ? only : null;
+  };
+  lead.forEach((x) => { const v = take(x.id); if (v) out.push(v); });
+  other.forEach((x, k) => {
+    if (seen.has(x.id)) return;
+    const v = take(x.id);
+    if (!v) return;
+    const prev = k > 0 ? out.findIndex((y) => y.id === other[k - 1].id) : -1;
+    out.splice(prev + 1, 0, v); // hinter den Vorgänger von der anderen Seite
+  });
+  return out;
+}
+
+const nightPart = (d) => d && { night: d.night, transit: d.transit, journey: d.journey };
+function mergeDay(b, m, t) {
+  return { id: m.id, ...pick3(nightPart(b), nightPart(m), nightPart(t)), trips: mergeList(b?.trips, m.trips, t.trips) };
+}
+
+function mergeTrips(base, mine, theirs) {
+  const b = base || {};
+  const days = mergeList(b.days, mine.days, theirs.days, mergeDay);
+  const journal = mergeList(b.journal, mine.journal, theirs.journal).filter((e) => days.some((d) => d.id === e.dayId));
+  return {
+    title: pick3(b.title, mine.title, theirs.title),
+    startDate: pick3(b.startDate, mine.startDate, theirs.startDate),
+    preNight: pick3(b.preNight, mine.preNight, theirs.preNight),
+    days: days.length ? days : mine.days,
+    journal,
+  };
+}
+
 async function pushTrip() {
   clearTimeout(sync.timer);
-  if (!linked() || !syncCfg.dirty || sync.conflict || readOnly()) return;
+  if (!linked() || !syncCfg.dirty || readOnly()) return;
   if (sync.pushing) { sync.pushAgain = true; return; }
   sync.pushing = true; sync.error = null;
   renderSyncStatus();
-  const version = sync.version;
   try {
     const col = sync.pb.collection('trips');
     const remote = await col.getOne(syncCfg.tripId, { fields: 'id,updated' });
     if (remote.updated !== syncCfg.remoteUpdated) {
-      sync.conflict = await col.getOne(syncCfg.tripId);
-      openSync();
-    } else {
-      // Erst die Fotos, damit andere Geräte sie schon finden, wenn der neue Stand ankommt.
-      await uploadPhotos();
-      const rec = await col.update(syncCfg.tripId, { title: state.title, data: state }, { fields: 'id,title,updated' });
-      syncCfg.remoteUpdated = rec.updated; syncCfg.tripTitle = rec.title;
-      if (sync.version === version) syncCfg.dirty = false;
-      saveSync();
+      // Woanders geändert: zusammenführen, dann den gemeinsamen Stand hochladen.
+      const rec = await col.getOne(syncCfg.tripId);
+      const merged = mergeTrips(loadBase(), state, normalizeTrip(rec.data));
+      state = normalizeTrip(merged);
+      saveJSON(STORAGE_KEY, state);
+      syncCfg.remoteUpdated = rec.updated;
+      if (ui.draft && !dayById(ui.draft.dayId)) closeDraft();
+      $('#trip-title').value = state.title;
+      render(); drawMap(false);
+      showToast('Änderungen von einem anderen Gerät wurden übernommen.');
     }
+    // Erst die Fotos, damit andere Geräte sie schon finden, wenn der neue Stand ankommt.
+    await uploadPhotos();
+    const sent = clone(state);
+    const sentVersion = sync.version;
+    const rec = await col.update(syncCfg.tripId, { title: sent.title, data: sent }, { fields: 'id,title,updated' });
+    syncCfg.remoteUpdated = rec.updated; syncCfg.tripTitle = rec.title;
+    saveBase(sent);
+    syncCfg.dirty = sync.version !== sentVersion; // während des Hochladens geändert: gleich noch einmal
+    saveSync();
     sync.offline = false;
   } catch (err) {
     handleSyncError(err);
   }
   sync.pushing = false;
   // Während des Hochladens geändert: gleich noch einmal. Fehler und Offline wiederholt der Timer unten.
-  if (sync.pushAgain || (syncCfg.dirty && !sync.error && !sync.offline && !sync.conflict)) {
+  if (sync.pushAgain || (syncCfg.dirty && !sync.error && !sync.offline)) {
     sync.pushAgain = false;
     sync.timer = setTimeout(pushTrip, 1500);
   }
@@ -1733,7 +1840,7 @@ async function pushTrip() {
 }
 
 async function pullTrip() {
-  if (!linked() || sync.pushing || sync.conflict) return;
+  if (!linked() || sync.pushing) return;
   try {
     const rec = await sync.pb.collection('trips').getOne(syncCfg.tripId);
     sync.offline = false; sync.error = null;
@@ -1742,8 +1849,7 @@ async function pullTrip() {
     if (rec.updated === syncCfg.remoteUpdated) {
       if (syncCfg.dirty) pushTrip(); else uploadPhotos();
     } else if (syncCfg.dirty) {
-      sync.conflict = rec;
-      openSync();
+      pushTrip(); // führt beide Stände zusammen
     } else if (!ui.draft && !ui.jdraft) {
       // Mitten in einer Bearbeitung nicht austauschen; der nächste Abgleich holt es nach.
       applyRemote(rec, false);
@@ -1765,8 +1871,8 @@ function applyRemote(rec, fit) {
   next.journal = next.journal.filter((e) => next.days.some((d) => d.id === e.dayId));
   state = next;
   Object.assign(syncCfg, { tripId: rec.id, tripTitle: rec.title, remoteUpdated: rec.updated, dirty: false, role: roleOf(rec) });
-  sync.conflict = null;
   saveSync();
+  saveBase(clone(state));
   saveJSON(STORAGE_KEY, state);
   closeDraft(); closeEntryDraft();
   if (ui.focusDay && !dayById(ui.focusDay)) ui.focusDay = null;
@@ -1809,7 +1915,6 @@ function syncStatus() {
   if (!sync.pb) return { text: 'Online-Sync', cls: '' };
   if (!loggedIn()) return { text: 'Anmelden', cls: 'is-warn' };
   if (!syncCfg.tripId) return { text: 'Online: keine Reise', cls: '' };
-  if (sync.conflict) return { text: 'Sync: Konflikt', cls: 'is-bad' };
   if (sync.error) return { text: 'Sync-Fehler', cls: 'is-bad' };
   if (sync.pushing) return { text: 'Speichert…', cls: '' };
   if (syncCfg.dirty) return { text: sync.offline ? 'Offline · noch nicht online' : 'Wird gespeichert…', cls: 'is-warn' };
@@ -1865,19 +1970,6 @@ function syncBodyHTML() {
 
   const who = `<p class="sync-meta">Angemeldet als <strong>${esc(pb.authStore.record?.email || '')}</strong><br>${serverLine}</p>`;
   const footer = `<div class="editor-actions sync-foot"><button class="btn ghost" data-action="sync-logout">Abmelden</button></div>`;
-
-  if (sync.conflict) {
-    const when = syncTimeFmt.format(parseServerTime(sync.conflict.updated));
-    return `${who}
-      <div class="sync-box is-bad">
-        <p><strong>Die Reise wurde auch woanders geändert</strong> (online zuletzt am ${esc(when)}). Auf diesem Gerät gibt es Änderungen, die noch nicht online sind.</p>
-        <p>Welcher Stand soll gelten? Der andere geht verloren. Mit „Exportieren“ kannst du den Stand auf diesem Gerät vorher sichern.</p>
-        <div class="editor-actions">
-          <button class="btn primary" data-action="sync-keep-local"${dis}>Stand von diesem Gerät</button>
-          <button class="btn" data-action="sync-take-remote"${dis}>Online-Stand laden</button>
-        </div>
-      </div>${err}${footer}`;
-  }
 
   if (!syncCfg.tripId) {
     const list = sync.trips === null
@@ -2415,6 +2507,7 @@ const actions = {
       );
       Object.assign(syncCfg, { tripId: rec.id, tripTitle: rec.title, remoteUpdated: rec.updated, dirty: false, role: 'owner' });
       saveSync();
+      saveBase(clone(state));
       uploadPhotos();
     });
   },
@@ -2434,19 +2527,6 @@ const actions = {
   },
   'sync-now'() {
     runSync(() => (syncCfg.dirty ? pushTrip() : pullTrip()));
-  },
-  'sync-keep-local'() {
-    syncCfg.remoteUpdated = sync.conflict.updated;
-    syncCfg.dirty = true;
-    sync.conflict = null;
-    saveSync();
-    runSync(pushTrip);
-  },
-  'sync-take-remote'() {
-    const rec = sync.conflict;
-    sync.conflict = null;
-    applyRemote(rec, true);
-    renderSync(); renderSyncStatus();
   },
 };
 
@@ -2471,7 +2551,13 @@ document.addEventListener('click', (e) => {
   if (readOnly() && !READONLY_OK.has(el.dataset.action) && !el.dataset.action.startsWith('sync-')) return;
   // Ausgewähltes oder bearbeitetes Element in einem eingeklappten Tag: Tag aufklappen.
   if (['add-ex', 'add-entry'].includes(el.dataset.action)) ui.collapsed.delete(el.dataset.day);
-  actions[el.dataset.action](el);
+  try {
+    const r = actions[el.dataset.action](el);
+    r?.catch?.((err) => showToast(`Da ist etwas schiefgegangen: ${err.message}`, true));
+  } catch (err) {
+    console.error(err);
+    showToast(`Da ist etwas schiefgegangen: ${err.message}`, true);
+  }
 });
 
 // Formulare (Sync-Dialog): Enter und Absenden-Knopf.
@@ -2487,8 +2573,8 @@ document.addEventListener('input', (e) => {
   if (t.dataset.picker) picker(t.dataset.picker).query = t.value;
   else if (t.dataset.draft === 'name' && ui.draft) ui.draft.data.name = t.value;
   else if (t.dataset.draftNote !== undefined && ui.draft) ui.draft.data.notes[Number(t.dataset.draftNote)] = t.value;
-  else if (t.dataset.jdraft === 'text' && ui.jdraft) ui.jdraft.data.text = t.value;
-  else if (t.dataset.jdraft === 'link' && ui.jdraft) ui.jdraft.linkInput = t.value;
+  else if (t.dataset.jdraft === 'text' && ui.jdraft) { ui.jdraft.data.text = t.value; persistDraft(); }
+  else if (t.dataset.jdraft === 'link' && ui.jdraft) { ui.jdraft.linkInput = t.value; persistDraft(); }
   else if (t.id === 'trip-title' && !readOnly()) { state.title = t.value; save(); }
 });
 
@@ -2792,8 +2878,13 @@ document.addEventListener('keydown', (e) => {
 });
 
 $('#app-version').textContent = `Version ${APP_VERSION}`;
+const draftRestored = restoreDraft();
 render();
 drawMap(true);
+if (draftRestored) {
+  setTimeout(() => document.querySelector('#jdraft-text')?.scrollIntoView({ block: 'center' }), 300);
+  showToast('Dein angefangener Tagebucheintrag wurde wiederhergestellt.');
+}
 renderFollowBtn();
 
 if (loadJSON('reisekarte.legend.v1', true) === false) {

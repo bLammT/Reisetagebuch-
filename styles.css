@@ -630,3 +630,11 @@ body.is-resizing #map { pointer-events: none; }
 .rename-btn:hover { color: var(--accent); background: var(--accent-soft); }
 .is-readonly .place [data-action="rename-place"] { display: none !important; }
 .leaflet-control-layers { font: 13px var(--font-body); }
+
+/* ---------- Meldungen ---------- */
+.toast {
+  position: fixed; z-index: 4000; left: 50%; bottom: calc(20px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%);
+  max-width: min(520px, calc(100vw - 32px)); padding: 10px 14px; border-radius: var(--radius);
+  background: var(--ink); color: var(--panel); font-size: 14px; box-shadow: 0 8px 24px rgba(0,0,0,.25);
+}
+.toast.is-error { background: var(--danger); color: #fff; }
