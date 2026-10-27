@@ -25,7 +25,7 @@
  *           mit Online-Sync zusätzlich auf dem Server (Tabelle photos, Schlüssel = photoId).
  */
 
-const APP_VERSION = '2026-10-27.2';
+const APP_VERSION = '2026-10-27.3';
 const STORAGE_KEY = 'reisekarte.trip.v1';
 const ROUTE_CACHE_KEY = 'reisekarte.routes.v1';
 
@@ -628,7 +628,9 @@ const DASH = { flight: '1 9', train: '12 6', ferry: '2 7' };
 const LINE_OPACITY = { normal: 0.95, selected: 1, soft: 0.45, past: 0.75, future: 0.3 };
 const FADED_COLOR = '#7b868d';
 const isFaded = (level) => level === 'past' || level === 'future';
-function drawLine(latlngs, color, { level = 'normal', approx, weight, tooltip, dash, onClick }) {
+// Alle Linien der aktuellen Zeichnung in Zeichenreihenfolge (für den Aufbau des hervorgehobenen Tages).
+let drawnLines = [];
+function drawLine(latlngs, color, { day, level = 'normal', approx, weight, tooltip, dash, onClick }) {
   const faded = isFaded(level);
   const w = level === 'selected' ? weight + 3 : level === 'past' ? Math.max(weight - 1, 2) : level === 'future' ? Math.max(weight - 2, 2) : weight;
   const pane = PANE[level];
@@ -643,6 +645,52 @@ function drawLine(latlngs, color, { level = 'normal', approx, weight, tooltip, d
   }).addTo(routeLayer);
   if (tooltip) { line.bindTooltip(tooltip, { sticky: true }); halo.bindTooltip(tooltip, { sticky: true }); }
   if (onClick) { line.on('click', onClick); halo.on('click', onClick); }
+  drawnLines.push({ day, latlngs, parts: [halo, line] });
+}
+
+// Wird ein anderer Tag hervorgehoben, zeichnen sich seine Linien nacheinander vom Start bis zum Ende.
+const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)');
+let animatedDay = null; // Tag, dessen Aufbau schon lief (beim Neuzeichnen nicht noch einmal)
+let lineAnim = 0;
+function animateLines(lines) {
+  const run = ++lineAnim;
+  // Länge je Linie (grob in km), damit lange Strecken länger brauchen als kurze.
+  const segs = lines.map((l) => {
+    const cum = [0];
+    for (let k = 1; k < l.latlngs.length; k++) {
+      const [a, b] = [l.latlngs[k - 1], l.latlngs[k]];
+      cum.push(cum[k - 1] + kmBetween({ lat: a[0], lon: a[1] }, { lat: b[0], lon: b[1] }));
+    }
+    return { ...l, cum, len: cum[cum.length - 1] };
+  }).filter((l) => l.len > 0);
+  if (!segs.length) return;
+  const total = segs.reduce((n, l) => n + l.len, 0);
+  // Insgesamt höchstens 2,5 s, jede Linie mindestens 0,4 s.
+  const TOTAL_MS = Math.min(2500, 700 * segs.length + 400);
+  segs.forEach((l) => { l.ms = Math.max(400, (TOTAL_MS * l.len) / total); });
+  const prefix = (l, t) => {
+    const d = l.len * t;
+    let k = 1;
+    while (k < l.cum.length - 1 && l.cum[k] < d) k++;
+    const [a, b] = [l.latlngs[k - 1], l.latlngs[k]];
+    const f = l.cum[k] > l.cum[k - 1] ? (d - l.cum[k - 1]) / (l.cum[k] - l.cum[k - 1]) : 1;
+    return [...l.latlngs.slice(0, k), [a[0] + (b[0] - a[0]) * Math.min(f, 1), a[1] + (b[1] - a[1]) * Math.min(f, 1)]];
+  };
+  segs.forEach((l) => l.parts.forEach((p) => p.setLatLngs([l.latlngs[0]])));
+  let idx = 0, t0 = performance.now();
+  const step = (now) => {
+    if (run !== lineAnim) return; // inzwischen neu gezeichnet
+    const l = segs[idx];
+    const t = Math.min((now - t0) / l.ms, 1);
+    const eased = 1 - (1 - t) ** 2;
+    l.parts.forEach((p) => p.setLatLngs(t < 1 ? prefix(l, eased) : l.latlngs));
+    if (t >= 1) {
+      if (++idx >= segs.length) return;
+      t0 = now;
+    }
+    requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
 }
 
 // Punkte je Tag (für „Karte folgt der Liste“), wird bei jedem Zeichnen neu gefüllt.
@@ -659,6 +707,8 @@ function drawMap(fit) {
   redrawAfterPopup = false; // wird gerade ohnehin komplett neu gezeichnet
   routeLayer.clearLayers();
   markerLayer.clearLayers();
+  drawnLines = [];
+  lineAnim++; // laufenden Aufbau abbrechen, die Linien sind gleich neu
   const all = [];
   const focus = [];
   const fi = ui.focusDay ? dayIndex(ui.focusDay) : -1;
@@ -690,7 +740,7 @@ function drawMap(fit) {
       const key = `transfer:${d.id}`;
       const r = getRoute('car', [t.from, t.to]);
       const ll = r && r.coords ? r.coords : [[t.from.lat, t.from.lon], [t.to.lat, t.to.lon]];
-      drawLine(ll, TRANSFER_COLOR, { level: levelOf(i, key), approx: !(r && r.coords), weight: 5, tooltip: `Tag ${i + 1}: Ortswechsel ${esc(t.from.name)} → ${esc(t.to.name)}`, onClick: pick(key, d.id) });
+      drawLine(ll, TRANSFER_COLOR, { day: i, level: levelOf(i, key), approx: !(r && r.coords), weight: 5, tooltip: `Tag ${i + 1}: Ortswechsel ${esc(t.from.name)} → ${esc(t.to.name)}`, onClick: pick(key, d.id) });
       collect(ll, key);
     }
 
@@ -702,7 +752,7 @@ function drawMap(fit) {
       const r = getRoute(ex.mode, pts);
       const ll = legLatLngs(ex.mode, pts, r);
       drawLine(ll, color, {
-        level, approx: !(r && r.coords), weight: 4, dash: DASH[ex.mode],
+        day: i, level, approx: !(r && r.coords), weight: 4, dash: DASH[ex.mode],
         tooltip: `Tag ${i + 1}: ${esc(tripTitle(i, ex))} (${PROFILES[ex.mode].label})`,
         onClick: pick(key, d.id),
       });
@@ -750,7 +800,7 @@ function drawMap(fit) {
       const r = getRoute(j.mode, [j.from, j.to]);
       const ll = legLatLngs(j.mode, [j.from, j.to], r);
       drawLine(ll, TRANSFER_COLOR, {
-        level, approx: !(r && r.coords), weight: 5, dash: DASH[j.mode],
+        day: i, level, approx: !(r && r.coords), weight: 5, dash: DASH[j.mode],
         tooltip: `Nacht ${nightNo(k)} unterwegs: ${esc(j.from.name)} → ${esc(j.to.name)} (${PROFILES[j.mode].label})`,
         onClick: pick(key, d.id),
       });
@@ -832,6 +882,12 @@ function drawMap(fit) {
         interactive: false, keyboard: false, zIndexOffset: 2500,
       }).addTo(markerLayer);
     });
+  }
+
+  const focusId = fi >= 0 ? state.days[fi].id : null;
+  if (focusId !== animatedDay) {
+    animatedDay = focusId;
+    if (focusId && !reduceMotion?.matches) animateLines(drawnLines.filter((l) => l.day === fi));
   }
 
   selMarkerNow = selMarker;
