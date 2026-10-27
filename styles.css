@@ -499,6 +499,9 @@ body.is-dragging-day, body.is-dragging-day * { cursor: grabbing !important; user
 .day + .night, .night-add { margin-top: 10px; }
 .night + .day-gap + .day, .night + .day { margin-top: 10px; border-top: 1px solid var(--line); }
 .night.is-empty { border-style: dashed; }
+.night.is-focused { background: var(--accent-soft); border-color: var(--accent); }
+.night-toggle { border: 0; background: none; padding: 0; color: inherit; cursor: pointer; text-align: left; }
+.night-toggle:hover { color: var(--accent); }
 .night-head { display: flex; align-items: baseline; gap: 8px; }
 .night-ico { color: var(--accent); font-size: 14px; }
 .night-n { font: 700 14px/1.1 var(--font-display); }

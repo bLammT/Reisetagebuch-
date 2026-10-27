@@ -25,7 +25,7 @@
  *           mit Online-Sync zusätzlich auf dem Server (Tabelle photos, Schlüssel = photoId).
  */
 
-const APP_VERSION = '2026-10-27.3';
+const APP_VERSION = '2026-10-27.4';
 const STORAGE_KEY = 'reisekarte.trip.v1';
 const ROUTE_CACHE_KEY = 'reisekarte.routes.v1';
 
@@ -192,7 +192,7 @@ try {
 }
 
 const ui = {
-  focusDay: null, // id des hervorgehobenen Tages
+  focus: null, // hervorgehobener Tag oder hervorgehobene Nacht: 'day:<dayId>' oder 'night:<nightId>'
   sel: null, // ausgewähltes Element: 'trip:<id>', 'transfer:<dayId>', 'stay:<dayId>' oder 'entry:<id>'
   draft: null, // { dayId, exId|null, data, error }
   pickers: {}, // key -> { query, results, loading, error, editing }
@@ -260,6 +260,18 @@ const nightIndex = (id) => (id === PRE ? -1 : dayIndex(id));
 const nightById = (id) => (id === PRE ? state.preNight : dayById(id));
 // Nummer der Nacht in der Reise (die Nacht vor Tag 1 ist Nacht 1).
 const nightNo = (k) => k + 1 + (state.preNight ? 1 : 0);
+// Zeitposition für die Karte: Nacht vor Tag 1 = 0, Tag i = 2i+1, Nacht nach Tag k = 2k+2.
+const dayPos = (i) => 2 * i + 1;
+const nightPos = (k) => 2 * k + 2;
+function focusPos() {
+  const [type, id] = (ui.focus || '').split(':');
+  if (type === 'day') { const i = dayIndex(id); return i >= 0 ? dayPos(i) : -1; }
+  if (type === 'night') {
+    const k = nightIndex(id);
+    return (k < 0 && (id !== PRE || !state.preNight)) ? -1 : nightPos(k);
+  }
+  return -1;
+}
 const hasNight = (n) => Boolean(n && (n.night || n.transit));
 
 // Wo wacht man an Tag i auf? In der Unterkunft der Vornacht oder nach einer Nacht unterwegs am Ankunftsort.
@@ -630,7 +642,7 @@ const FADED_COLOR = '#7b868d';
 const isFaded = (level) => level === 'past' || level === 'future';
 // Alle Linien der aktuellen Zeichnung in Zeichenreihenfolge (für den Aufbau des hervorgehobenen Tages).
 let drawnLines = [];
-function drawLine(latlngs, color, { day, level = 'normal', approx, weight, tooltip, dash, onClick }) {
+function drawLine(latlngs, color, { pos, level = 'normal', approx, weight, tooltip, dash, onClick }) {
   const faded = isFaded(level);
   const w = level === 'selected' ? weight + 3 : level === 'past' ? Math.max(weight - 1, 2) : level === 'future' ? Math.max(weight - 2, 2) : weight;
   const pane = PANE[level];
@@ -645,12 +657,12 @@ function drawLine(latlngs, color, { day, level = 'normal', approx, weight, toolt
   }).addTo(routeLayer);
   if (tooltip) { line.bindTooltip(tooltip, { sticky: true }); halo.bindTooltip(tooltip, { sticky: true }); }
   if (onClick) { line.on('click', onClick); halo.on('click', onClick); }
-  drawnLines.push({ day, latlngs, parts: [halo, line] });
+  drawnLines.push({ pos, latlngs, parts: [halo, line] });
 }
 
-// Wird ein anderer Tag hervorgehoben, zeichnen sich seine Linien nacheinander vom Start bis zum Ende.
+// Wird ein anderer Tag (oder eine andere Nacht) hervorgehoben, zeichnen sich die Linien nacheinander vom Start bis zum Ende.
 const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)');
-let animatedDay = null; // Tag, dessen Aufbau schon lief (beim Neuzeichnen nicht noch einmal)
+let animatedFocus = null; // Tag oder Nacht, deren Aufbau schon lief (beim Neuzeichnen nicht noch einmal)
 let lineAnim = 0;
 function animateLines(lines) {
   const run = ++lineAnim;
@@ -693,8 +705,9 @@ function animateLines(lines) {
   requestAnimationFrame(step);
 }
 
-// Punkte je Tag (für „Karte folgt der Liste“), wird bei jedem Zeichnen neu gefüllt.
-let dayPts = new Map();
+// Punkte je Tag und Nacht ('day:<id>', 'night:<id>', für „Karte folgt der Liste“), wird bei jedem Zeichnen neu gefüllt.
+let timePts = new Map();
+const addTimePts = (fkey, ll) => { if (!timePts.has(fkey)) timePts.set(fkey, []); timePts.get(fkey).push(...ll); };
 
 function fitPoints(pts, close) {
   if (pts.length === 1) map.setView(pts[0], close ? Math.max(map.getZoom(), 14) : 12);
@@ -711,26 +724,31 @@ function drawMap(fit) {
   lineAnim++; // laufenden Aufbau abbrechen, die Linien sind gleich neu
   const all = [];
   const focus = [];
-  const fi = ui.focusDay ? dayIndex(ui.focusDay) : -1;
+  const fp = focusPos(); // -1: nichts hervorgehoben
+  const fi = fp % 2 === 1 ? (fp - 1) / 2 : -1; // hervorgehobener Tag
+  const fk = fp >= 0 && fp % 2 === 0 ? fp / 2 - 1 : null; // hervorgehobene Nacht
   const sel = ui.sel;
   const selPts = [];
   let selMarker = null;
-  // Stufe eines Elements: angeklickt, gleicher Tag wie das Angeklickte, anderer Tag oder nichts ausgewählt.
-  const levelOf = (i, key) => {
+  // Stufe eines Elements (pos = Zeitposition): angeklickt, gleicher Tag/gleiche Nacht wie das Angeklickte,
+  // früher oder später als der hervorgehobene Tag bzw. die Nacht, oder nichts ausgewählt.
+  const levelOf = (pos, key) => {
     if (sel === key) return 'selected';
-    if (fi >= 0 && fi !== i) return i < fi ? 'past' : 'future';
-    if (sel && fi === i) return 'soft';
+    if (fp >= 0 && fp !== pos) return pos < fp ? 'past' : 'future';
+    if (sel && fp === pos) return 'soft';
     return 'normal';
   };
   const MARKER_OPACITY = { normal: 1, selected: 1, soft: 0.5, past: 0.75, future: 0.35 };
-  dayPts = new Map(state.days.map((d) => [d.id, []]));
-  const pick = (key, dayId) => (e) => { if (!ui.mapPick) { L.DomEvent.stopPropagation(e); selectFromMap(key, dayId); } };
+  timePts = new Map();
+  const pick = (key, fkey) => (e) => { if (!ui.mapPick) { L.DomEvent.stopPropagation(e); selectFromMap(key, fkey); } };
 
   state.days.forEach((d, i) => {
+    const pos = dayPos(i);
+    const fkey = `day:${d.id}`;
     const collect = (ll, key) => {
       all.push(...ll);
-      dayPts.get(d.id).push(...ll);
-      if (fi === i) focus.push(...ll);
+      addTimePts(fkey, ll);
+      if (fp === pos) focus.push(...ll);
       if (sel === key) selPts.push(...ll);
     };
     const color = dayColor(i);
@@ -740,7 +758,7 @@ function drawMap(fit) {
       const key = `transfer:${d.id}`;
       const r = getRoute('car', [t.from, t.to]);
       const ll = r && r.coords ? r.coords : [[t.from.lat, t.from.lon], [t.to.lat, t.to.lon]];
-      drawLine(ll, TRANSFER_COLOR, { day: i, level: levelOf(i, key), approx: !(r && r.coords), weight: 5, tooltip: `Tag ${i + 1}: Ortswechsel ${esc(t.from.name)} → ${esc(t.to.name)}`, onClick: pick(key, d.id) });
+      drawLine(ll, TRANSFER_COLOR, { pos, level: levelOf(pos, key), approx: !(r && r.coords), weight: 5, tooltip: `Tag ${i + 1}: Ortswechsel ${esc(t.from.name)} → ${esc(t.to.name)}`, onClick: pick(key, fkey) });
       collect(ll, key);
     }
 
@@ -748,13 +766,13 @@ function drawMap(fit) {
       const pts = waypoints(i, ex);
       if (pts.length < 2) return;
       const key = `trip:${ex.id}`;
-      const level = levelOf(i, key);
+      const level = levelOf(pos, key);
       const r = getRoute(ex.mode, pts);
       const ll = legLatLngs(ex.mode, pts, r);
       drawLine(ll, color, {
-        day: i, level, approx: !(r && r.coords), weight: 4, dash: DASH[ex.mode],
+        pos, level, approx: !(r && r.coords), weight: 4, dash: DASH[ex.mode],
         tooltip: `Tag ${i + 1}: ${esc(tripTitle(i, ex))} (${PROFILES[ex.mode].label})`,
-        onClick: pick(key, d.id),
+        onClick: pick(key, fkey),
       });
       collect(ll, key);
 
@@ -767,49 +785,43 @@ function drawMap(fit) {
         L.circleMarker([p.lat, p.lon], {
           pane: PANE[level], radius: (isGoal ? 7 : 6) + big, color: '#ffffff', weight: 2,
           fillColor: isFaded(level) ? FADED_COLOR : color, fillOpacity: op, opacity: op,
-        }).bindTooltip(`${esc(p.name)}${p.note ? ` · ${esc(p.note)}` : ''}<br><small>Tag ${i + 1} · ${isGoal ? 'Ziel' : `Stopp ${k + 1}`}</small>`).on('click', pick(key, d.id)).addTo(markerLayer);
+        }).bindTooltip(`${esc(p.name)}${p.note ? ` · ${esc(p.note)}` : ''}<br><small>Tag ${i + 1} · ${isGoal ? 'Ziel' : `Stopp ${k + 1}`}</small>`).on('click', pick(key, fkey)).addTo(markerLayer);
       });
       if (ex.from) {
         L.circleMarker([ex.from.lat, ex.from.lon], {
           pane: PANE[level], radius: 6 + big, color: isFaded(level) ? FADED_COLOR : color, weight: 3, fillColor: '#ffffff', fillOpacity: 1, opacity: op,
-        }).bindTooltip(`${esc(ex.from.name)}<br><small>Tag ${i + 1} · Start</small>`).on('click', pick(key, d.id)).addTo(markerLayer);
+        }).bindTooltip(`${esc(ex.from.name)}<br><small>Tag ${i + 1} · Start</small>`).on('click', pick(key, fkey)).addTo(markerLayer);
       }
     });
 
-    drawJourney(i, collect);
+    drawJourney(i);
   });
+  if (state.days.length) drawJourney(-1);
 
-  // Nacht vor Tag 1 (unterwegs), gehört auf der Karte zu Tag 1.
-  if (state.days.length) {
-    const d0 = state.days[0].id;
-    drawJourney(-1, (ll, key) => {
-      all.push(...ll);
-      dayPts.get(d0).push(...ll);
-      if (fi === 0) focus.push(...ll);
-      if (sel === key) selPts.push(...ll);
-    });
-  }
-
-  function drawJourney(k, collect) {
+  // Nacht unterwegs: eigene Zeitposition zwischen den Tagen.
+  function drawJourney(k) {
     const j = journeyFor(k);
     if (j) {
-      const i = Math.max(k, 0);
-      const d = state.days[i];
+      const pos = nightPos(k);
+      const fkey = `night:${nightId(k)}`;
       const key = `journey:${nightId(k)}`;
-      const level = levelOf(i, key);
+      const level = levelOf(pos, key);
       const r = getRoute(j.mode, [j.from, j.to]);
       const ll = legLatLngs(j.mode, [j.from, j.to], r);
       drawLine(ll, TRANSFER_COLOR, {
-        day: i, level, approx: !(r && r.coords), weight: 5, dash: DASH[j.mode],
+        pos, level, approx: !(r && r.coords), weight: 5, dash: DASH[j.mode],
         tooltip: `Nacht ${nightNo(k)} unterwegs: ${esc(j.from.name)} → ${esc(j.to.name)} (${PROFILES[j.mode].label})`,
-        onClick: pick(key, d.id),
+        onClick: pick(key, fkey),
       });
-      collect(ll, key);
+      all.push(...ll);
+      addTimePts(fkey, ll);
+      if (fp === pos) focus.push(...ll);
+      if (sel === key) selPts.push(...ll);
       const op = MARKER_OPACITY[level];
       [j.from, j.to].forEach((p, n) => {
         L.circleMarker([p.lat, p.lon], {
           pane: PANE[level], radius: 6, color: '#ffffff', weight: 2, fillColor: isFaded(level) ? FADED_COLOR : TRANSFER_COLOR, fillOpacity: op, opacity: op,
-        }).bindTooltip(`${esc(p.name)}<br><small>Nacht ${nightNo(k)} · ${n ? 'Ankunft' : 'Abfahrt'}</small>`).on('click', pick(key, d.id)).addTo(markerLayer);
+        }).bindTooltip(`${esc(p.name)}<br><small>Nacht ${nightNo(k)} · ${n ? 'Ankunft' : 'Abfahrt'}</small>`).on('click', pick(key, fkey)).addTo(markerLayer);
       });
     }
   }
@@ -818,12 +830,14 @@ function drawMap(fit) {
 
   stayPins().forEach((pin) => {
     const isSel = samePlace(pin.place, selStayPlace);
-    const relevant = isSel || (fi >= 0 && pin.ranges.some((g) => fi >= g.from && fi <= g.to + 1));
+    // Eine Unterkunft betrifft den Ankunftstag, ihre Nächte, die Tage dazwischen und den Abreisetag.
+    const span = (g) => [dayPos(g.from), dayPos(g.to + 1)];
+    const relevant = isSel || (fp >= 0 && pin.ranges.some((g) => fp >= span(g)[0] && fp <= span(g)[1]));
     // Bei Ausflug oder Ortswechsel bleibt die Unterkunft des Tages sichtbar, bei Unterkunft/Eintrag nur das Angeklickte.
     const pinOnly = Boolean(sel) && (sel.startsWith('stay:') || sel.startsWith('entry:'));
-    const faded = (fi >= 0 && !relevant) || (pinOnly && !isSel);
+    const faded = (fp >= 0 && !relevant) || (pinOnly && !isSel);
     // Ausgegraute Unterkunft: schon vorbei (kräftiger) oder kommt noch (blass).
-    const past = faded && fi >= 0 && !relevant && pin.ranges.every((g) => g.to + 1 < fi);
+    const past = faded && fp >= 0 && !relevant && pin.ranges.every((g) => span(g)[1] < fp);
     const nights = pin.ranges.reduce((n, g) => n + g.to - g.from + 1, 0);
     const nightsTxt = 'N' + pin.ranges.map((g) => (g.from === g.to ? `${nightNo(g.from)}` : `${nightNo(g.from)}–${nightNo(g.to)}`)).join(', ');
     const icon = L.divIcon({
@@ -836,12 +850,15 @@ function drawMap(fit) {
     const marker = L.marker([pin.place.lat, pin.place.lon], { icon, zIndexOffset: isSel ? 3000 : relevant ? 2000 : 1000 })
       .bindPopup(`<strong>${esc(pin.place.name)}</strong><br>${nights} ${nights === 1 ? 'Nacht' : 'Nächte'}<br>${periods}${pin.place.label ? `<br><small>${esc(pin.place.label)}</small>` : ''}`)
       .addTo(markerLayer);
-    // Angeklickt: zur ersten Übernachtung an diesem Ort (oder der, die gerade ausgewählt ist).
-    const g = pin.ranges.find((x) => fi >= x.from && fi <= x.to) || pin.ranges[0];
-    marker.on('click', pick(`stay:${nightId(g.from)}`, state.days[Math.max(g.from, 0)].id));
-    all.push([pin.place.lat, pin.place.lon]);
+    // Angeklickt: zur hervorgehobenen Nacht bzw. der Nacht des hervorgehobenen Tages hier, sonst zur ersten.
+    const inRange = (k) => k !== null && pin.ranges.some((x) => k >= x.from && k <= x.to);
+    const nk = [fk, fi >= 0 ? fi : null, fi >= 0 ? fi - 1 : null].find(inRange) ?? pin.ranges[0].from;
+    marker.on('click', pick(`stay:${nightId(nk)}`, `night:${nightId(nk)}`));
+    const ll = [[pin.place.lat, pin.place.lon]];
+    all.push(...ll);
     pin.ranges.forEach((x) => {
-      for (let k = Math.max(x.from, 0); k <= Math.min(x.to + 1, state.days.length - 1); k++) dayPts.get(state.days[k].id).push([pin.place.lat, pin.place.lon]);
+      for (let k = x.from; k <= x.to; k++) addTimePts(`night:${nightId(k)}`, ll);
+      for (let k = Math.max(x.from, 0); k <= Math.min(x.to + 1, state.days.length - 1); k++) addTimePts(`day:${state.days[k].id}`, ll);
     });
     if (relevant) focus.push([pin.place.lat, pin.place.lon]);
     if (isSel) { selPts.push([pin.place.lat, pin.place.lon]); selMarker = marker; }
@@ -850,7 +867,7 @@ function drawMap(fit) {
   state.journal.forEach((e) => {
     if (!e.place) return;
     const i = dayIndex(e.dayId);
-    const level = levelOf(i, `entry:${e.id}`);
+    const level = levelOf(dayPos(i), `entry:${e.id}`);
     const icon = L.divIcon({
       className: 'stay-icon', iconSize: [0, 0], iconAnchor: [0, 0],
       html: `<div class="jpin${level === 'selected' ? ' is-selected' : level === 'past' ? ' is-past' : level === 'future' || level === 'soft' ? ' is-faded' : ''}" style="--day:${dayColor(i)}">✎</div>`,
@@ -859,40 +876,52 @@ function drawMap(fit) {
     const excerpt = e.text.length > 220 ? `${e.text.slice(0, 220)}…` : e.text;
     const marker = L.marker([e.place.lat, e.place.lon], { icon, zIndexOffset: level === 'selected' ? 3500 : 1500 })
       .bindPopup(`<div class="jpop"><strong>Tag ${i + 1} · ${fmtDate(i)}</strong><br><small>${esc(e.place.name)} · ${timeFmt.format(new Date(e.at))}${trip ? ` · ${esc(tripTitle(i, trip))}` : ''}</small>${excerpt ? `<p>${esc(excerpt)}</p>` : ''}${e.photos[0] ? `<img class="jpop-img" data-photo-img="${e.photos[0]}" alt="Foto">` : ''}</div>`, { maxWidth: 260 })
-      .on('click', pick(`entry:${e.id}`, e.dayId))
+      .on('click', pick(`entry:${e.id}`, `day:${e.dayId}`))
       .addTo(markerLayer);
     all.push([e.place.lat, e.place.lon]);
-    dayPts.get(e.dayId)?.push([e.place.lat, e.place.lon]);
+    addTimePts(`day:${e.dayId}`, [[e.place.lat, e.place.lon]]);
     if (fi === i) focus.push([e.place.lat, e.place.lon]);
     if (level === 'selected') { selPts.push([e.place.lat, e.place.lon]); selMarker = marker; }
   });
 
   // Hervorgehobener Tag: wo man morgens aufwacht und wo man abends schläft (bzw. abfährt).
+  // Hervorgehobene Nacht: Abfahrt und Ankunft der Nacht unterwegs, sonst die Unterkunft.
+  const tags = [];
+  let tagColor = TRANSFER_COLOR;
   if (fi >= 0) {
-    const morning = morningPlace(fi), evening = eveningPlace(fi);
-    const tags = [];
-    if (morning && evening && samePlace(morning, evening)) tags.push([morning, '☀ Start · ☾ Abends']);
+    const morning = morningPlace(fi);
+    const j = journeyFor(fi); // Nacht danach unterwegs: abends geht es am Abfahrtsort los
+    const evening = j ? j.from : eveningPlace(fi);
+    const eveningTxt = j ? '☾ Abfahrt' : '☾ Abends';
+    tagColor = dayColor(fi);
+    if (morning && evening && samePlace(morning, evening)) tags.push([morning, `☀ Start · ${eveningTxt}`]);
     else {
       if (morning) tags.push([morning, '☀ Start']);
-      if (evening) tags.push([evening, state.days[fi].transit && !state.days[fi].night ? '☾ Abfahrt' : '☾ Abends']);
+      if (evening) tags.push([evening, eveningTxt]);
     }
+  } else if (fk !== null) {
+    const j = journeyFor(fk);
+    if (j) tags.push([j.from, '☾ Abfahrt'], [j.to, '☀ Ankunft']);
+    else if (nightAt(fk)?.night) tags.push([nightAt(fk).night, `☾ Nacht ${nightNo(fk)}`]);
+  }
+  {
     tags.forEach(([p, text]) => {
       L.marker([p.lat, p.lon], {
-        icon: L.divIcon({ className: 'stay-icon', iconSize: [0, 0], iconAnchor: [0, 0], html: `<div class="day-tag" style="--day:${dayColor(fi)}">${text}</div>` }),
+        icon: L.divIcon({ className: 'stay-icon', iconSize: [0, 0], iconAnchor: [0, 0], html: `<div class="day-tag" style="--day:${tagColor}">${text}</div>` }),
         interactive: false, keyboard: false, zIndexOffset: 2500,
       }).addTo(markerLayer);
     });
   }
 
-  const focusId = fi >= 0 ? state.days[fi].id : null;
-  if (focusId !== animatedDay) {
-    animatedDay = focusId;
-    if (focusId && !reduceMotion?.matches) animateLines(drawnLines.filter((l) => l.day === fi));
+  const focusKey = fp >= 0 ? ui.focus : null;
+  if (focusKey !== animatedFocus) {
+    animatedFocus = focusKey;
+    if (focusKey && !reduceMotion?.matches) animateLines(drawnLines.filter((l) => l.pos === fp));
   }
 
   selMarkerNow = selMarker;
   if (fit) {
-    const pts = selPts.length ? selPts : fi >= 0 && focus.length ? focus : all;
+    const pts = selPts.length ? selPts : fp >= 0 && focus.length ? focus : all;
     fitPoints(pts, selPts.length > 0);
     // Nach dem Zoomen das Popup des angeklickten Pins öffnen.
     const key = sel;
@@ -1370,7 +1399,7 @@ function journeyHTML(k) {
   const key = `journey:${id}`;
   const open = !jr || ui.journeyOpen.has(id);
   return `<div class="journey">
-    <div class="place selectable${ui.sel === key ? ' is-selected' : ''}" data-action="select" data-sel="${key}" data-day="${state.days[Math.max(k, 0)].id}" role="button" tabindex="0">
+    <div class="place selectable${ui.sel === key ? ' is-selected' : ''}" data-action="select" data-sel="${key}" data-day="${state.days[Math.max(k, 0)].id}" data-night="${id}" role="button" tabindex="0">
       <div class="place-text">
         <span class="place-name">Unterwegs · ${PROFILES[j.mode].label}</span>
         <span class="place-label">${jr ? `${esc(jr.from.name)} → ${esc(jr.to.name)} · <span data-stat="journey:${id}"></span>` : 'Trag ein, wohin es geht'}</span>
@@ -1394,12 +1423,13 @@ function nightHTML(k) {
   const id = nightId(k);
   const edge = k < 0 || k === state.days.length - 1; // vor dem ersten / nach dem letzten Tag: optional
   const pk = `night:${id}`;
+  const focused = ui.focus === `night:${id}`;
   let body;
   if (n.night && !picker(pk).editing && !stayRunAt(k) && k >= 0) {
     // Weitere Nacht am selben Ort: eine Zeile reicht.
     const sel = ui.sel === `stay:${id}`;
-    return `<section class="night is-cont" id="night-${id}">
-      <div class="night-head selectable${sel ? ' is-selected' : ''}" data-action="select" data-sel="stay:${id}" data-day="${state.days[k].id}" role="button" tabindex="0">
+    return `<section class="night is-cont${focused ? ' is-focused' : ''}" id="night-${id}">
+      <div class="night-head selectable${sel ? ' is-selected' : ''}" data-action="select" data-sel="stay:${id}" data-day="${state.days[k].id}" data-night="${id}" role="button" tabindex="0">
         <span class="night-ico" aria-hidden="true">☾</span>
         <span class="night-n">Nacht ${nightNo(k)}</span>
         <span class="night-cont" title="${fmtDate(k)} → ${fmtDate(k + 1)}">weiter in <strong>${esc(n.night.name)}</strong></span>
@@ -1411,16 +1441,16 @@ function nightHTML(k) {
   if (n.transit) {
     body = journeyHTML(k);
   } else if (n.night && !picker(pk).editing) {
-    body = `<div class="selectable stay-select${ui.sel === `stay:${id}` ? ' is-selected' : ''}" data-action="select" data-sel="stay:${id}" data-day="${state.days[Math.max(k, 0)].id}" role="button" tabindex="0">${pickerHTML(pk, n.night)}</div>${nightsHTML(k)}`;
+    body = `<div class="selectable stay-select${ui.sel === `stay:${id}` ? ' is-selected' : ''}" data-action="select" data-sel="stay:${id}" data-day="${state.days[Math.max(k, 0)].id}" data-night="${id}" role="button" tabindex="0">${pickerHTML(pk, n.night)}</div>${nightsHTML(k)}`;
   } else if (readOnly()) {
     body = '<p class="sync-meta">Noch nicht eingetragen</p>';
   } else {
     body = `${pickerHTML(pk, n.night, 'Unterkunft oder Ort suchen')}${n.night ? '' : `<button class="link-btn transit-btn" data-action="toggle-transit" data-night="${id}">Diese Nacht bin ich unterwegs</button>`}`;
   }
-  return `<section class="night${hasNight(n) ? '' : ' is-empty'}" id="night-${id}">
+  return `<section class="night${hasNight(n) ? '' : ' is-empty'}${focused ? ' is-focused' : ''}" id="night-${id}">
     <div class="night-head">
       <span class="night-ico" aria-hidden="true">☾</span>
-      <span class="night-n">Nacht ${nightNo(k)}</span>
+      ${hasNight(n) ? `<button class="night-n night-toggle" data-action="focus-night" data-night="${id}" aria-pressed="${focused}" title="Auf der Karte hervorheben">Nacht ${nightNo(k)}</button>` : `<span class="night-n">Nacht ${nightNo(k)}</span>`}
       <span class="night-date">${fmtDate(k)} → ${fmtDate(k + 1)}</span>
       ${edge ? `<button class="icon-btn" data-action="remove-night" data-night="${id}" aria-label="Übernachtung entfernen" title="Übernachtung entfernen">×</button>` : ''}
     </div>
@@ -1453,7 +1483,7 @@ function daySummaryHTML(d, i) {
 }
 
 function dayHTML(d, i) {
-  const focused = ui.focusDay === d.id;
+  const focused = ui.focus === `day:${d.id}`;
   const draftHere = ui.draft && ui.draft.dayId === d.id;
   const jdHere = ui.jdraft && ui.jdraft.dayId === d.id;
   const collapsed = ui.collapsed.has(d.id) && !draftHere && !jdHere;
@@ -1988,7 +2018,7 @@ function applyRemote(rec, fit) {
   saveBase(clone(state));
   saveJSON(STORAGE_KEY, state);
   closeDraft(); closeEntryDraft();
-  if (ui.focusDay && !dayById(ui.focusDay)) ui.focusDay = null;
+  if (focusPos() < 0) ui.focus = null;
   ui.sel = null;
   $('#trip-title').value = state.title; // render() lässt das Feld sonst in Ruhe, solange es den Fokus hat
   render(); drawMap(fit);
@@ -2166,7 +2196,15 @@ function closeDraft() {
 
 const actions = {
   'focus-day'(el) {
-    ui.focusDay = ui.focusDay === el.dataset.day && !ui.sel ? null : el.dataset.day;
+    const key = `day:${el.dataset.day}`;
+    ui.focus = ui.focus === key && !ui.sel ? null : key;
+    ui.sel = null;
+    render();
+    drawMap(true);
+  },
+  'focus-night'(el) {
+    const key = `night:${el.dataset.night}`;
+    ui.focus = ui.focus === key && !ui.sel ? null : key;
     ui.sel = null;
     render();
     drawMap(true);
@@ -2178,7 +2216,7 @@ const actions = {
       ui.sel = null;
     } else {
       ui.sel = key;
-      ui.focusDay = el.dataset.day;
+      ui.focus = el.dataset.night ? `night:${el.dataset.night}` : `day:${el.dataset.day}`;
       if ($('.app').classList.contains('map-hidden')) actions['toggle-map']();
     }
     map.closePopup();
@@ -2196,7 +2234,7 @@ const actions = {
     if (ui.jdraft?.dayId === d.id) closeEntryDraft();
     state.days.splice(i, 1);
     if (ui.draft?.dayId === d.id) closeDraft();
-    if (ui.focusDay === d.id) { ui.focusDay = null; ui.sel = null; }
+    if (ui.focus === `day:${d.id}` || ui.focus === `night:${d.id}`) { ui.focus = null; ui.sel = null; }
     save(); render(); drawMap(false);
   },
   'add-day'() {
@@ -2231,6 +2269,7 @@ const actions = {
     else Object.assign(dayById(id), normalizeNight(null));
     if (ui.openNight === id) ui.openNight = null;
     if (ui.sel === `stay:${id}` || ui.sel === `journey:${id}`) ui.sel = null;
+    if (ui.focus === `night:${id}`) ui.focus = null;
     ui.pickers = Object.fromEntries(Object.entries(ui.pickers).filter(([k]) => !k.endsWith(`:${id}`)));
     save(); render(); drawMap(false);
   },
@@ -2358,7 +2397,7 @@ const actions = {
     render();
   },
   'cancel-map-pick'() { ui.mapPick = null; render(); },
-  'fit-all'() { ui.focusDay = null; ui.sel = null; map.closePopup(); render(); drawMap(true); },
+  'fit-all'() { ui.focus = null; ui.sel = null; map.closePopup(); render(); drawMap(true); },
   'retry-routes'() {
     Object.keys(routeCache).forEach((k) => { if (routeCache[k].failed) delete routeCache[k]; });
     drawMap(false); updateStats();
@@ -2455,7 +2494,7 @@ const actions = {
     if (i < 0) return;
     const id = state.days[i].id;
     if (ui.collapsed.delete(id)) saveCollapsed();
-    ui.focusDay = id; ui.sel = null;
+    ui.focus = `day:${id}`; ui.sel = null;
     render(); drawMap(true);
     scrollToDay(id);
   },
@@ -2493,14 +2532,14 @@ const actions = {
     if (!confirm(`Die aktuelle Reise inklusive Tagebuch durch die Beispielreise ersetzen? Exportiere sie vorher, wenn du sie behalten willst.${syncCfg.tripId ? ' Die Online-Reise bleibt unverändert, dieses Gerät gleicht danach aber nicht mehr mit ihr ab.' : ''}`)) return;
     state.journal.flatMap((e) => e.photos).forEach(forgetPhoto);
     unlinkTrip(); renderSyncStatus();
-    state = sampleTrip(); closeDraft(); closeEntryDraft(); ui.focusDay = null; ui.sel = null;
+    state = sampleTrip(); closeDraft(); closeEntryDraft(); ui.focus = null; ui.sel = null;
     save(); render(); drawMap(true);
   },
   'clear-all'() {
     if (!confirm(`Alle Tage und das Tagebuch löschen und eine leere Reise beginnen? Exportiere vorher, wenn du sie behalten willst.${syncCfg.tripId ? ' Die Online-Reise bleibt unverändert, dieses Gerät gleicht danach aber nicht mehr mit ihr ab.' : ''}`)) return;
     state.journal.flatMap((e) => e.photos).forEach(forgetPhoto);
     unlinkTrip(); renderSyncStatus();
-    state = emptyTrip(); closeDraft(); closeEntryDraft(); ui.focusDay = null; ui.sel = null;
+    state = emptyTrip(); closeDraft(); closeEntryDraft(); ui.focus = null; ui.sel = null;
     save(); render(); drawMap(true);
   },
   'open-sync'() { openSync(); },
@@ -2645,7 +2684,7 @@ const actions = {
 };
 
 // Was im Nur-Lesen-Modus geht: ansehen, auswählen, ein-/ausklappen, Sync, Export.
-const READONLY_OK = new Set(['select', 'focus-day', 'toggle-day', 'collapse-all', 'expand-all', 'open-photo', 'close-photo',
+const READONLY_OK = new Set(['select', 'focus-day', 'focus-night', 'toggle-day', 'collapse-all', 'expand-all', 'open-photo', 'close-photo',
   'open-sync', 'close-sync', 'toggle-menu', 'export', 'fit-all', 'retry-routes', 'toggle-follow', 'today', 'toggle-map',
   'toggle-legend', 'edit-journey', 'share-copy']);
 
@@ -2755,7 +2794,7 @@ async function importFile(file) {
       }
     }
     state = next;
-    closeDraft(); closeEntryDraft(true); ui.focusDay = null; ui.sel = null; ui.sel = null;
+    closeDraft(); closeEntryDraft(true); ui.focus = null; ui.sel = null;
     save(); render(); drawMap(true);
   } catch (err) {
     alert(`Import fehlgeschlagen: ${err.message}`);
@@ -2784,45 +2823,52 @@ document.addEventListener('keydown', (e) => {
 
 /* ---------------------------------------------------------------- Liste ↔ Karte */
 
-// Auf der Karte angeklickt: auswählen und in der Liste dorthin scrollen.
-function selectFromMap(key, dayId) {
-  ui.sel = key; ui.focusDay = dayId;
-  if (ui.collapsed.delete(dayId)) saveCollapsed();
+// Auf der Karte angeklickt: auswählen und in der Liste dorthin scrollen (fkey = 'day:<id>' oder 'night:<id>').
+function selectFromMap(key, fkey) {
+  ui.sel = key; ui.focus = fkey;
+  const [type, id] = fkey.split(':');
+  if (type === 'day' && ui.collapsed.delete(id)) saveCollapsed();
   render(); drawMap(false);
   if (selMarkerNow) selMarkerNow.openPopup();
-  const el = document.querySelector(`#days [data-sel="${CSS.escape(key)}"]`) || document.getElementById(`day-${dayId}`);
+  const el = document.querySelector(`#days [data-sel="${CSS.escape(key)}"]`) || document.getElementById(`${type}-${id}`);
   if (!el) return;
   follow.ignoreUntil = Date.now() + 1500; // das Scrollen soll die Karte nicht wieder verschieben
   el.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
-// Beim Scrollen der Liste zeigt die Karte den Tag, der oben in der Liste steht (ganz oben: die ganze Reise).
+// Beim Scrollen der Liste zeigt die Karte den Tag oder die Nacht, die oben in der Liste steht (ganz oben: die ganze Reise).
 const FOLLOW_KEY = 'reisekarte.follow.v1';
-const follow = { on: loadJSON(FOLLOW_KEY, true) !== false, dayId: null, ignoreUntil: 0, timer: null };
+const follow = { on: loadJSON(FOLLOW_KEY, true) !== false, focus: null, ignoreUntil: 0, timer: null };
+const FOCUSABLE = '#days .day, #days .night:not(.is-empty)';
 
-function currentListDay() {
+function currentListFocus() {
   const panel = $('.panel');
   if (panel.scrollTop < 8) return null;
   const head = $('.panel-head');
   const top = getComputedStyle(head).position === 'sticky' ? head.getBoundingClientRect().bottom : panel.getBoundingClientRect().top;
-  const sec = [...document.querySelectorAll('#days .day')].find((x) => x.getBoundingClientRect().bottom > top + 40);
-  return sec ? sec.id.slice(4) : null;
+  const secs = [...document.querySelectorAll(FOCUSABLE)];
+  // Ganz unten angekommen: das Letzte zählt, auch wenn es nicht mehr bis nach oben rutschen kann.
+  const atEnd = panel.scrollTop + panel.clientHeight >= panel.scrollHeight - 4;
+  const sec = atEnd ? secs[secs.length - 1] : secs.find((x) => x.getBoundingClientRect().bottom > top + 40);
+  if (!sec) return null;
+  return sec.classList.contains('day') ? `day:${sec.id.slice(4)}` : `night:${sec.id.slice(6)}`;
 }
 
 function followList() {
   if (!follow.on || Date.now() < follow.ignoreUntil || drag?.started || ui.mapPick) return;
-  const id = currentListDay();
-  if (id === follow.dayId) return;
-  follow.dayId = id;
-  if (ui.focusDay !== id) {
+  const key = currentListFocus();
+  if (key === follow.focus) return;
+  follow.focus = key;
+  if (ui.focus !== key) {
     // Hervorhebung wandert mit, ohne die Liste neu aufzubauen (sonst springt das Scrollen).
-    ui.focusDay = id; ui.sel = null;
-    document.querySelectorAll('#days .day').forEach((x) => x.classList.toggle('is-focused', x.id === `day-${id}`));
+    ui.focus = key; ui.sel = null;
+    const elId = key && key.replace(':', '-');
+    document.querySelectorAll(FOCUSABLE).forEach((x) => x.classList.toggle('is-focused', x.id === elId));
     document.querySelectorAll('#days .is-selected').forEach((x) => x.classList.remove('is-selected'));
     map.closePopup();
     drawMap(false);
   }
-  const pts = id ? dayPts.get(id) : [...dayPts.values()].flat();
+  const pts = key ? timePts.get(key) : [...timePts.values()].flat();
   if (pts?.length) fitPoints(pts, false);
 }
 
@@ -2838,7 +2884,7 @@ function renderFollowBtn() {
 }
 actions['toggle-follow'] = () => {
   follow.on = !follow.on;
-  follow.dayId = undefined;
+  follow.focus = undefined;
   saveJSON(FOLLOW_KEY, follow.on);
   renderFollowBtn();
   if (follow.on) followList();
