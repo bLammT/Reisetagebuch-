@@ -25,7 +25,7 @@
  *           mit Online-Sync zusätzlich auf dem Server (Tabelle photos, Schlüssel = photoId).
  */
 
-const APP_VERSION = '2026-10-27.1';
+const APP_VERSION = '2026-10-27.2';
 const STORAGE_KEY = 'reisekarte.trip.v1';
 const ROUTE_CACHE_KEY = 'reisekarte.routes.v1';
 
@@ -600,7 +600,7 @@ const routeLayer = L.layerGroup().addTo(map);
 // Eigene Ebenen, damit ausgegraute Linien nie über dem hervorgehobenen Tag liegen (auch nicht auf derselben Straße).
 map.createPane('routes-faded').style.zIndex = 390;
 map.createPane('routes-top').style.zIndex = 410;
-const PANE = { faded: 'routes-faded', selected: 'routes-top', soft: 'overlayPane', normal: 'overlayPane' };
+const PANE = { past: 'routes-faded', future: 'routes-faded', selected: 'routes-top', soft: 'overlayPane', normal: 'overlayPane' };
 const markerLayer = L.layerGroup().addTo(map);
 
 // Flüge als leichter Bogen, damit sie sich von Straßen unterscheiden.
@@ -623,12 +623,14 @@ function legLatLngs(mode, pts, r) {
 }
 const DASH = { flight: '1 9', train: '12 6', ferry: '2 7' };
 
-// level: 'normal', 'selected' (angeklickt), 'soft' (gleicher Tag, nicht angeklickt), 'faded' (anderer Tag)
-const LINE_OPACITY = { normal: 0.95, selected: 1, soft: 0.45, faded: 0.45 };
-const FADED_COLOR = '#8a959c';
+// level: 'normal', 'selected' (angeklickt), 'soft' (gleicher Tag, nicht angeklickt),
+// 'past' (früherer Tag: schon gefahren, kräftiges Grau), 'future' (späterer Tag: kommt noch, blass)
+const LINE_OPACITY = { normal: 0.95, selected: 1, soft: 0.45, past: 0.75, future: 0.3 };
+const FADED_COLOR = '#7b868d';
+const isFaded = (level) => level === 'past' || level === 'future';
 function drawLine(latlngs, color, { level = 'normal', approx, weight, tooltip, dash, onClick }) {
-  const faded = level === 'faded';
-  const w = level === 'selected' ? weight + 3 : faded ? Math.max(weight - 2, 2) : weight;
+  const faded = isFaded(level);
+  const w = level === 'selected' ? weight + 3 : level === 'past' ? Math.max(weight - 1, 2) : level === 'future' ? Math.max(weight - 2, 2) : weight;
   const pane = PANE[level];
   // Der breitere weiße Rand ist mit anklickbar, damit man die Linie auch auf dem Handy trifft.
   // Ausgegraute Linien bekommen keinen sichtbaren Rand, sonst decken sie den hervorgehobenen Tag ab.
@@ -666,11 +668,11 @@ function drawMap(fit) {
   // Stufe eines Elements: angeklickt, gleicher Tag wie das Angeklickte, anderer Tag oder nichts ausgewählt.
   const levelOf = (i, key) => {
     if (sel === key) return 'selected';
-    if (fi >= 0 && fi !== i) return 'faded';
+    if (fi >= 0 && fi !== i) return i < fi ? 'past' : 'future';
     if (sel && fi === i) return 'soft';
     return 'normal';
   };
-  const MARKER_OPACITY = { normal: 1, selected: 1, soft: 0.5, faded: 0.5 };
+  const MARKER_OPACITY = { normal: 1, selected: 1, soft: 0.5, past: 0.75, future: 0.35 };
   dayPts = new Map(state.days.map((d) => [d.id, []]));
   const pick = (key, dayId) => (e) => { if (!ui.mapPick) { L.DomEvent.stopPropagation(e); selectFromMap(key, dayId); } };
 
@@ -714,12 +716,12 @@ function drawMap(fit) {
         const isGoal = ex.end === 'place' && k === stops.length - 1;
         L.circleMarker([p.lat, p.lon], {
           pane: PANE[level], radius: (isGoal ? 7 : 6) + big, color: '#ffffff', weight: 2,
-          fillColor: level === 'faded' ? FADED_COLOR : color, fillOpacity: op, opacity: op,
+          fillColor: isFaded(level) ? FADED_COLOR : color, fillOpacity: op, opacity: op,
         }).bindTooltip(`${esc(p.name)}${p.note ? ` · ${esc(p.note)}` : ''}<br><small>Tag ${i + 1} · ${isGoal ? 'Ziel' : `Stopp ${k + 1}`}</small>`).on('click', pick(key, d.id)).addTo(markerLayer);
       });
       if (ex.from) {
         L.circleMarker([ex.from.lat, ex.from.lon], {
-          pane: PANE[level], radius: 6 + big, color: level === 'faded' ? FADED_COLOR : color, weight: 3, fillColor: '#ffffff', fillOpacity: 1, opacity: op,
+          pane: PANE[level], radius: 6 + big, color: isFaded(level) ? FADED_COLOR : color, weight: 3, fillColor: '#ffffff', fillOpacity: 1, opacity: op,
         }).bindTooltip(`${esc(ex.from.name)}<br><small>Tag ${i + 1} · Start</small>`).on('click', pick(key, d.id)).addTo(markerLayer);
       }
     });
@@ -756,7 +758,7 @@ function drawMap(fit) {
       const op = MARKER_OPACITY[level];
       [j.from, j.to].forEach((p, n) => {
         L.circleMarker([p.lat, p.lon], {
-          pane: PANE[level], radius: 6, color: '#ffffff', weight: 2, fillColor: level === 'faded' ? FADED_COLOR : TRANSFER_COLOR, fillOpacity: op, opacity: op,
+          pane: PANE[level], radius: 6, color: '#ffffff', weight: 2, fillColor: isFaded(level) ? FADED_COLOR : TRANSFER_COLOR, fillOpacity: op, opacity: op,
         }).bindTooltip(`${esc(p.name)}<br><small>Nacht ${nightNo(k)} · ${n ? 'Ankunft' : 'Abfahrt'}</small>`).on('click', pick(key, d.id)).addTo(markerLayer);
       });
     }
@@ -770,13 +772,15 @@ function drawMap(fit) {
     // Bei Ausflug oder Ortswechsel bleibt die Unterkunft des Tages sichtbar, bei Unterkunft/Eintrag nur das Angeklickte.
     const pinOnly = Boolean(sel) && (sel.startsWith('stay:') || sel.startsWith('entry:'));
     const faded = (fi >= 0 && !relevant) || (pinOnly && !isSel);
+    // Ausgegraute Unterkunft: schon vorbei (kräftiger) oder kommt noch (blass).
+    const past = faded && fi >= 0 && !relevant && pin.ranges.every((g) => g.to + 1 < fi);
     const nights = pin.ranges.reduce((n, g) => n + g.to - g.from + 1, 0);
     const nightsTxt = 'N' + pin.ranges.map((g) => (g.from === g.to ? `${nightNo(g.from)}` : `${nightNo(g.from)}–${nightNo(g.to)}`)).join(', ');
     const icon = L.divIcon({
       className: 'stay-icon',
       iconSize: [0, 0],
       iconAnchor: [0, 0],
-      html: `<div class="pin${isSel ? ' is-selected' : faded ? ' is-faded' : ''}"><span class="pin-ico">⌂</span><span class="pin-name">${esc(pin.place.name)}</span><span class="pin-n">${nightsTxt}</span></div>`,
+      html: `<div class="pin${isSel ? ' is-selected' : past ? ' is-past' : faded ? ' is-faded' : ''}"><span class="pin-ico">⌂</span><span class="pin-name">${esc(pin.place.name)}</span><span class="pin-n">${nightsTxt}</span></div>`,
     });
     const periods = pin.ranges.map((g) => `${fmtDate(g.from)} bis ${fmtDate(g.to + 1)}`).join('<br>');
     const marker = L.marker([pin.place.lat, pin.place.lon], { icon, zIndexOffset: isSel ? 3000 : relevant ? 2000 : 1000 })
@@ -799,7 +803,7 @@ function drawMap(fit) {
     const level = levelOf(i, `entry:${e.id}`);
     const icon = L.divIcon({
       className: 'stay-icon', iconSize: [0, 0], iconAnchor: [0, 0],
-      html: `<div class="jpin${level === 'selected' ? ' is-selected' : level === 'faded' || level === 'soft' ? ' is-faded' : ''}" style="--day:${dayColor(i)}">✎</div>`,
+      html: `<div class="jpin${level === 'selected' ? ' is-selected' : level === 'past' ? ' is-past' : level === 'future' || level === 'soft' ? ' is-faded' : ''}" style="--day:${dayColor(i)}">✎</div>`,
     });
     const trip = state.days[i]?.trips.find((x) => x.id === e.tripId);
     const excerpt = e.text.length > 220 ? `${e.text.slice(0, 220)}…` : e.text;
@@ -812,6 +816,23 @@ function drawMap(fit) {
     if (fi === i) focus.push([e.place.lat, e.place.lon]);
     if (level === 'selected') { selPts.push([e.place.lat, e.place.lon]); selMarker = marker; }
   });
+
+  // Hervorgehobener Tag: wo man morgens aufwacht und wo man abends schläft (bzw. abfährt).
+  if (fi >= 0) {
+    const morning = morningPlace(fi), evening = eveningPlace(fi);
+    const tags = [];
+    if (morning && evening && samePlace(morning, evening)) tags.push([morning, '☀ Start · ☾ Abends']);
+    else {
+      if (morning) tags.push([morning, '☀ Start']);
+      if (evening) tags.push([evening, state.days[fi].transit && !state.days[fi].night ? '☾ Abfahrt' : '☾ Abends']);
+    }
+    tags.forEach(([p, text]) => {
+      L.marker([p.lat, p.lon], {
+        icon: L.divIcon({ className: 'stay-icon', iconSize: [0, 0], iconAnchor: [0, 0], html: `<div class="day-tag" style="--day:${dayColor(fi)}">${text}</div>` }),
+        interactive: false, keyboard: false, zIndexOffset: 2500,
+      }).addTo(markerLayer);
+    });
+  }
 
   selMarkerNow = selMarker;
   if (fit) {

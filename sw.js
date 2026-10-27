@@ -1,7 +1,7 @@
 // Service Worker: hält die App-Dateien vor, damit die Reisekarte auch ohne Netz startet.
 // Strategie "erst Netz, dann Cache": Neue Versionen kommen sofort an, offline gilt der letzte Stand.
 // Beim Netz immer nachfragen (no-cache), sonst liefert der Browser-Cache bis zu einige Minuten lang die alte Version.
-const CACHE = 'reisekarte-v12';
+const CACHE = 'reisekarte-v13';
 const SHELL = [
   './', 'index.html', 'styles.css', 'app.js', 'manifest.webmanifest', 'icon.svg', 'icon-192.png', 'icon-512.png',
   'vendor/leaflet/leaflet.js', 'vendor/leaflet/leaflet.css', 'vendor/pocketbase/pocketbase.umd.js',

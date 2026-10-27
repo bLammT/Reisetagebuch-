@@ -270,6 +270,8 @@ button, input, select { font: inherit; color: inherit; }
 .lg-transfer { border-color: var(--transfer); }
 .lg-trip { border-image: linear-gradient(90deg, #d9480f, #1971c2, #2f9e44) 1; }
 .lg-air { border-top: 3px dashed #6b7b80; }
+.lg-past { border-color: rgba(123,134,141,.75); }
+.lg-future { border-color: rgba(123,134,141,.3); }
 
 /* Unterkunfts-Pin auf der Karte */
 .stay-icon { width: 0; height: 0; }
@@ -290,7 +292,14 @@ button, input, select { font: inherit; color: inherit; }
 .pin-ico { display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: 4px; background: rgba(255,255,255,.18); }
 .pin-name { max-width: 140px; overflow: hidden; text-overflow: ellipsis; }
 .pin-n { font: 500 11px var(--font-mono); opacity: .8; }
-.pin.is-faded { opacity: .35; }
+.pin.is-faded { opacity: .3; }
+.pin.is-past { opacity: .6; }
+/* Hervorgehobener Tag: „Start“ und „Abends“ unter dem Ort */
+.day-tag {
+  position: absolute; left: 0; top: 0; transform: translate(-50%, 8px);
+  background: var(--day); color: #ffffff; padding: 2px 7px; border-radius: 999px; white-space: nowrap;
+  font: 600 11px/1.4 var(--font-body); box-shadow: 0 0 0 2px #ffffff, 0 2px 5px rgba(0,0,0,.3); pointer-events: none;
+}
 .leaflet-container { font-family: var(--font-body); }
 .leaflet-popup-content { font-size: 13px; line-height: 1.4; }
 
@@ -353,7 +362,8 @@ button, input, select { font: inherit; color: inherit; }
   background: #ffffff; color: var(--day); border: 3px solid var(--day);
   font-size: 13px; line-height: 1; box-shadow: 0 1px 4px rgba(0,0,0,.3); cursor: pointer;
 }
-.jpin.is-faded { opacity: .35; }
+.jpin.is-faded { opacity: .3; }
+.jpin.is-past { opacity: .6; }
 .jpop p { margin: 6px 0 0; white-space: pre-wrap; }
 .jpop-img { display: block; width: 100%; max-width: 230px; margin-top: 6px; border-radius: 6px; }
 

@@ -15,7 +15,7 @@
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
   <link rel="stylesheet" href="vendor/leaflet/leaflet.css">
   <!-- ?v= bei jeder neuen Version erhöhen (wie APP_VERSION in app.js), damit kein Browser die alte Datei weiterverwendet. -->
-  <link rel="stylesheet" href="styles.css?v=2026-10-27.1">
+  <link rel="stylesheet" href="styles.css?v=2026-10-27.2">
 </head>
 <body>
   <div class="app">
@@ -79,6 +79,8 @@
         <div class="legend-row"><span class="lg-pin">⌂</span>Unterkunft · Nächte</div>
         <div class="legend-row"><span class="lg-line lg-transfer"></span>Ortswechsel</div>
         <div class="legend-row"><span class="lg-line lg-trip"></span>Ausflug (Farbe = Tag)</div>
+        <div class="legend-row"><span class="lg-line lg-past"></span>Andere Tage: schon vorbei</div>
+        <div class="legend-row"><span class="lg-line lg-future"></span>Andere Tage: kommt noch</div>
         <div class="legend-row"><span class="lg-line lg-train"></span>Zug</div>
         <div class="legend-row"><span class="lg-line lg-flight"></span>Flug</div>
         <div class="legend-row"><span class="lg-line lg-ferry"></span>Fähre</div>
@@ -104,6 +106,6 @@
 
   <script src="vendor/leaflet/leaflet.js"></script>
   <script src="vendor/pocketbase/pocketbase.umd.js"></script>
-  <script src="app.js?v=2026-10-27.1"></script>
+  <script src="app.js?v=2026-10-27.2"></script>
 </body>
 </html>
