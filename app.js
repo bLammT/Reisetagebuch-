@@ -18,12 +18,14 @@
  *           end: 'start' = zurück zum Start (Ausflug), 'night' = zur Unterkunft der Nacht (Weiterreise), 'place' = zu „to“
  *   Place = { name, label, lat, lon, note? }  note = was man dort macht (nur bei Stopps)
  *   trip.journal = [Entry]
- *   Entry = { id, dayId, at: ISO-Zeit, text, place: Place|null, photos: [photoId], links: [url] }
+ *   Entry = { id, dayId, tripId?, at: ISO-Zeit, text, place: Place|null, photos: [photoId], links: [url] }
+ *           tripId = Eintrag gehört zu diesem Trip (Ausflug/Weiterreise) und steht in der Liste darunter;
+ *           fehlt der Trip, steht er wieder im Tagebuch des Tages
  *           Fotos liegen verkleinert in IndexedDB (zu groß für localStorage),
  *           mit Online-Sync zusätzlich auf dem Server (Tabelle photos, Schlüssel = photoId).
  */
 
-const APP_VERSION = '2026-10-25.1';
+const APP_VERSION = '2026-10-27.1';
 const STORAGE_KEY = 'reisekarte.trip.v1';
 const ROUTE_CACHE_KEY = 'reisekarte.routes.v1';
 
@@ -169,6 +171,7 @@ function normalizeTrip(t) {
     journal: (Array.isArray(t.journal) ? t.journal : []).map((e) => ({
       id: String(e.id || uid()),
       dayId: String(e.dayId || ''),
+      ...(e.tripId ? { tripId: String(e.tripId) } : {}),
       at: String(e.at || new Date().toISOString()),
       text: String(e.text || ''),
       place: normalizePlace(e.place),
@@ -235,6 +238,8 @@ const dayIndex = (id) => state.days.findIndex((d) => d.id === id);
 const dayById = (id) => state.days.find((d) => d.id === id);
 const dayColor = (i) => DAY_COLORS[i % DAY_COLORS.length];
 const entriesOf = (dayId) => state.journal.filter((e) => e.dayId === dayId).sort((a, b) => a.at.localeCompare(b.at));
+// Trip, zu dem ein Eintrag (oder Entwurf) gehört, falls es ihn an diesem Tag noch gibt.
+const entryTrip = (dayId, tripId) => (tripId && dayById(dayId)?.trips.some((x) => x.id === tripId) ? tripId : null);
 
 // Tagebucheinträge ohne passenden Tag verwerfen.
 state.journal = state.journal.filter((e) => dayById(e.dayId));
@@ -592,6 +597,10 @@ const baseLayers = {
 L.control.layers(baseLayers, null, { position: 'topleft' }).addTo(map);
 map.on('baselayerchange', (e) => saveJSON(TILES_KEY, e.name));
 const routeLayer = L.layerGroup().addTo(map);
+// Eigene Ebenen, damit ausgegraute Linien nie über dem hervorgehobenen Tag liegen (auch nicht auf derselben Straße).
+map.createPane('routes-faded').style.zIndex = 390;
+map.createPane('routes-top').style.zIndex = 410;
+const PANE = { faded: 'routes-faded', selected: 'routes-top', soft: 'overlayPane', normal: 'overlayPane' };
 const markerLayer = L.layerGroup().addTo(map);
 
 // Flüge als leichter Bogen, damit sie sich von Straßen unterscheiden.
@@ -615,16 +624,21 @@ function legLatLngs(mode, pts, r) {
 const DASH = { flight: '1 9', train: '12 6', ferry: '2 7' };
 
 // level: 'normal', 'selected' (angeklickt), 'soft' (gleicher Tag, nicht angeklickt), 'faded' (anderer Tag)
-const LINE_OPACITY = { normal: 0.95, selected: 1, soft: 0.4, faded: 0.2 };
+const LINE_OPACITY = { normal: 0.95, selected: 1, soft: 0.45, faded: 0.45 };
+const FADED_COLOR = '#8a959c';
 function drawLine(latlngs, color, { level = 'normal', approx, weight, tooltip, dash, onClick }) {
-  const w = level === 'selected' ? weight + 3 : weight;
+  const faded = level === 'faded';
+  const w = level === 'selected' ? weight + 3 : faded ? Math.max(weight - 2, 2) : weight;
+  const pane = PANE[level];
   // Der breitere weiße Rand ist mit anklickbar, damit man die Linie auch auf dem Handy trifft.
-  const halo = L.polyline(latlngs, { color: '#ffffff', weight: w + 8, opacity: LINE_OPACITY[level] * 0.9, interactive: Boolean(onClick) }).addTo(routeLayer);
+  // Ausgegraute Linien bekommen keinen sichtbaren Rand, sonst decken sie den hervorgehobenen Tag ab.
+  const halo = L.polyline(latlngs, {
+    pane, color: '#ffffff', weight: w + 8, opacity: faded ? 0 : LINE_OPACITY[level] * 0.9, interactive: Boolean(onClick),
+  }).addTo(routeLayer);
   const line = L.polyline(latlngs, {
-    color, weight: w, opacity: LINE_OPACITY[level],
+    pane, color: faded ? FADED_COLOR : color, weight: w, opacity: LINE_OPACITY[level],
     dashArray: dash || (approx ? '6 9' : null), lineCap: 'round', lineJoin: 'round',
   }).addTo(routeLayer);
-  if (level === 'selected') { halo.bringToFront(); line.bringToFront(); }
   if (tooltip) { line.bindTooltip(tooltip, { sticky: true }); halo.bindTooltip(tooltip, { sticky: true }); }
   if (onClick) { line.on('click', onClick); halo.on('click', onClick); }
 }
@@ -656,7 +670,7 @@ function drawMap(fit) {
     if (sel && fi === i) return 'soft';
     return 'normal';
   };
-  const MARKER_OPACITY = { normal: 1, selected: 1, soft: 0.5, faded: 0.3 };
+  const MARKER_OPACITY = { normal: 1, selected: 1, soft: 0.5, faded: 0.5 };
   dayPts = new Map(state.days.map((d) => [d.id, []]));
   const pick = (key, dayId) => (e) => { if (!ui.mapPick) { L.DomEvent.stopPropagation(e); selectFromMap(key, dayId); } };
 
@@ -699,13 +713,13 @@ function drawMap(fit) {
       stops.forEach((p, k) => {
         const isGoal = ex.end === 'place' && k === stops.length - 1;
         L.circleMarker([p.lat, p.lon], {
-          radius: (isGoal ? 7 : 6) + big, color: '#ffffff', weight: 2,
-          fillColor: color, fillOpacity: op, opacity: op,
+          pane: PANE[level], radius: (isGoal ? 7 : 6) + big, color: '#ffffff', weight: 2,
+          fillColor: level === 'faded' ? FADED_COLOR : color, fillOpacity: op, opacity: op,
         }).bindTooltip(`${esc(p.name)}${p.note ? ` · ${esc(p.note)}` : ''}<br><small>Tag ${i + 1} · ${isGoal ? 'Ziel' : `Stopp ${k + 1}`}</small>`).on('click', pick(key, d.id)).addTo(markerLayer);
       });
       if (ex.from) {
         L.circleMarker([ex.from.lat, ex.from.lon], {
-          radius: 6 + big, color, weight: 3, fillColor: '#ffffff', fillOpacity: 1, opacity: op,
+          pane: PANE[level], radius: 6 + big, color: level === 'faded' ? FADED_COLOR : color, weight: 3, fillColor: '#ffffff', fillOpacity: 1, opacity: op,
         }).bindTooltip(`${esc(ex.from.name)}<br><small>Tag ${i + 1} · Start</small>`).on('click', pick(key, d.id)).addTo(markerLayer);
       }
     });
@@ -742,7 +756,7 @@ function drawMap(fit) {
       const op = MARKER_OPACITY[level];
       [j.from, j.to].forEach((p, n) => {
         L.circleMarker([p.lat, p.lon], {
-          radius: 6, color: '#ffffff', weight: 2, fillColor: TRANSFER_COLOR, fillOpacity: op, opacity: op,
+          pane: PANE[level], radius: 6, color: '#ffffff', weight: 2, fillColor: level === 'faded' ? FADED_COLOR : TRANSFER_COLOR, fillOpacity: op, opacity: op,
         }).bindTooltip(`${esc(p.name)}<br><small>Nacht ${nightNo(k)} · ${n ? 'Ankunft' : 'Abfahrt'}</small>`).on('click', pick(key, d.id)).addTo(markerLayer);
       });
     }
@@ -787,9 +801,10 @@ function drawMap(fit) {
       className: 'stay-icon', iconSize: [0, 0], iconAnchor: [0, 0],
       html: `<div class="jpin${level === 'selected' ? ' is-selected' : level === 'faded' || level === 'soft' ? ' is-faded' : ''}" style="--day:${dayColor(i)}">✎</div>`,
     });
+    const trip = state.days[i]?.trips.find((x) => x.id === e.tripId);
     const excerpt = e.text.length > 220 ? `${e.text.slice(0, 220)}…` : e.text;
     const marker = L.marker([e.place.lat, e.place.lon], { icon, zIndexOffset: level === 'selected' ? 3500 : 1500 })
-      .bindPopup(`<div class="jpop"><strong>Tag ${i + 1} · ${fmtDate(i)}</strong><br><small>${esc(e.place.name)} · ${timeFmt.format(new Date(e.at))}</small>${excerpt ? `<p>${esc(excerpt)}</p>` : ''}${e.photos[0] ? `<img class="jpop-img" data-photo-img="${e.photos[0]}" alt="Foto">` : ''}</div>`, { maxWidth: 260 })
+      .bindPopup(`<div class="jpop"><strong>Tag ${i + 1} · ${fmtDate(i)}</strong><br><small>${esc(e.place.name)} · ${timeFmt.format(new Date(e.at))}${trip ? ` · ${esc(tripTitle(i, trip))}` : ''}</small>${excerpt ? `<p>${esc(excerpt)}</p>` : ''}${e.photos[0] ? `<img class="jpop-img" data-photo-img="${e.photos[0]}" alt="Foto">` : ''}</div>`, { maxWidth: 260 })
       .on('click', pick(`entry:${e.id}`, e.dayId))
       .addTo(markerLayer);
     all.push([e.place.lat, e.place.lon]);
@@ -1068,6 +1083,7 @@ function exHTML(d, i, ex) {
       </div>
     </div>
     <div class="ex-actions">
+      <button class="link-btn" data-action="add-entry" data-day="${d.id}" data-trip="${ex.id}" title="Fotos, Text oder Links zu diesem Trip">+ Fotos</button>
       <button class="link-btn" data-action="edit-ex" data-day="${d.id}" data-ex="${ex.id}">Bearbeiten</button>
       <button class="link-btn" data-action="delete-ex" data-day="${d.id}" data-ex="${ex.id}">Löschen</button>
     </div>
@@ -1155,11 +1171,20 @@ function entryHTML(e) {
 
 function entryEditorHTML() {
   const jd = ui.jdraft;
+  const i = dayIndex(jd.dayId);
+  const trips = state.days[i]?.trips || [];
+  const tripId = entryTrip(jd.dayId, jd.data.tripId);
   return `<div class="editor">
-    <p class="editor-title">${jd.entryId ? 'Eintrag bearbeiten' : 'Neuer Tagebucheintrag'}</p>
+    <p class="editor-title">${jd.entryId ? 'Eintrag bearbeiten' : tripId ? 'Fotos und Notizen zum Trip' : 'Neuer Tagebucheintrag'}</p>
     <label class="text-field">Text
-      <textarea id="jdraft-text" data-jdraft="text" rows="6" placeholder="Was hast du heute erlebt?">${esc(jd.data.text)}</textarea>
+      <textarea id="jdraft-text" data-jdraft="text" rows="${tripId ? 3 : 6}" placeholder="${tripId ? 'Wie war es? (optional)' : 'Was hast du heute erlebt?'}">${esc(jd.data.text)}</textarea>
     </label>
+    ${trips.length ? `<label class="text-field">Gehört zu
+      <select data-jdraft="trip">
+        <option value="">Tagebuch des Tages</option>
+        ${trips.map((ex) => `<option value="${ex.id}" ${ex.id === tripId ? 'selected' : ''}>${esc(tripTitle(i, ex))}</option>`).join('')}
+      </select>
+    </label>` : ''}
     <div>
       <div class="field-label">Fotos</div>
       ${thumbsHTML(jd.data.photos, true)}
@@ -1213,17 +1238,28 @@ function addDraftLink() {
   return true;
 }
 
-function journalHTML(d) {
-  const jd = ui.jdraft && ui.jdraft.dayId === d.id ? ui.jdraft : null;
-  const entries = entriesOf(d.id);
+// Einträge eines Tages ohne Trip (tripId = null) oder eines Trips, samt Entwurf, falls er dorthin gehört.
+function entryListHTML(d, tripId) {
+  const jd = ui.jdraft && ui.jdraft.dayId === d.id && entryTrip(d.id, ui.jdraft.data.tripId) === tripId ? ui.jdraft : null;
+  const editing = ui.jdraft?.entryId;
+  const entries = entriesOf(d.id).filter((e) => (e.id === editing ? jd : entryTrip(d.id, e.tripId) === tripId));
   if (!entries.length && !jd) return '';
-  return `<div class="journal">
+  return entries.map((e) => (jd && e.id === editing ? entryEditorHTML() : entryHTML(e))).join('')
+    + (jd && !entries.some((e) => e.id === editing) ? entryEditorHTML() : '');
+}
+
+function journalHTML(d) {
+  const list = entryListHTML(d, null);
+  return list ? `<div class="journal">
     <div class="field-label">Tagebuch</div>
-    <div class="entries">
-      ${entries.map((e) => (jd && jd.entryId === e.id ? entryEditorHTML() : entryHTML(e))).join('')}
-      ${jd && !jd.entryId ? entryEditorHTML() : ''}
-    </div>
-  </div>`;
+    <div class="entries">${list}</div>
+  </div>` : '';
+}
+
+// Fotos und Notizen zu einem Trip stehen direkt unter ihm.
+function tripEntriesHTML(d, ex) {
+  const list = entryListHTML(d, ex.id);
+  return list ? `<div class="entries trip-entries">${list}</div>` : '';
 }
 
 // Wie viele Nächte am Stück schläft man ab Nacht k am selben Ort? 0, wenn die Reihe schon früher beginnt.
@@ -1359,7 +1395,7 @@ function dayHTML(d, i) {
     ${collapsed ? daySummaryHTML(d, i) : `
     ${t ? `<p class="day-morning selectable transfer-row${ui.sel === `transfer:${d.id}` ? ' is-selected' : ''}" data-action="select" data-sel="transfer:${d.id}" data-day="${d.id}" role="button" tabindex="0">Ortswechsel nach <strong>${esc(t.to.name)}</strong> · <span data-stat="transfer:${d.id}"></span></p>` : ''}
     ${d.trips.length || draftHere ? `<div class="ex-list">
-      ${d.trips.map((ex) => (draftHere && ui.draft.exId === ex.id ? editorHTML(d, i) : exHTML(d, i, ex))).join('')}
+      ${d.trips.map((ex) => (draftHere && ui.draft.exId === ex.id ? editorHTML(d, i) : exHTML(d, i, ex)) + tripEntriesHTML(d, ex)).join('')}
       ${draftHere && !ui.draft.exId ? editorHTML(d, i) : ''}
     </div>` : ''}
     ${journalHTML(d)}
@@ -1422,15 +1458,15 @@ function scrollToDay(id) {
   document.getElementById(`day-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
-function newEntryDraft(dayId, entry) {
+function newEntryDraft(dayId, entry, tripId = null) {
   ui.pickers = Object.fromEntries(Object.entries(ui.pickers).filter(([k]) => !k.startsWith('jdraft:')));
   if (ui.mapPick?.startsWith('jdraft:')) ui.mapPick = null;
   ui.jdraft = {
     dayId,
     entryId: entry ? entry.id : null,
     data: entry
-      ? { text: entry.text, place: clone(entry.place), photos: [...entry.photos], links: [...entry.links] }
-      : { text: '', place: null, photos: [], links: [] },
+      ? { text: entry.text, place: clone(entry.place), photos: [...entry.photos], links: [...entry.links], tripId: entry.tripId || null }
+      : { text: '', place: null, photos: [], links: [], tripId },
     linkInput: '',
     added: [], removed: [], error: null, busy: false, locating: false,
   };
@@ -1446,7 +1482,7 @@ function restoreDraft() {
   if (!d || !dayById(d.dayId) || readOnly()) { saveJSON(DRAFT_KEY, null); return false; }
   ui.jdraft = {
     dayId: d.dayId, entryId: state.journal.some((e) => e.id === d.entryId) ? d.entryId : null,
-    data: { text: '', place: null, photos: [], links: [], ...d.data },
+    data: { text: '', place: null, photos: [], links: [], tripId: null, ...d.data },
     added: d.added || [], removed: d.removed || [], linkInput: d.linkInput || '', error: null, busy: false, locating: false,
   };
   ui.collapsed.delete(d.dayId);
@@ -2252,7 +2288,7 @@ const actions = {
   },
   'add-entry'(el) {
     if (ui.jdraft) closeEntryDraft();
-    newEntryDraft(el.dataset.day, null);
+    newEntryDraft(el.dataset.day, null, el.dataset.trip || null);
     render();
     $('#jdraft-text')?.focus();
   },
@@ -2285,6 +2321,7 @@ const actions = {
     const entry = {
       id: old ? old.id : uid(),
       dayId: jd.dayId,
+      ...(entryTrip(jd.dayId, jd.data.tripId) ? { tripId: jd.data.tripId } : {}),
       at: old ? old.at : new Date().toISOString(),
       text,
       place: jd.data.place,
@@ -2580,6 +2617,12 @@ document.addEventListener('input', (e) => {
 
 document.addEventListener('change', (e) => {
   const t = e.target;
+  if (t.dataset.jdraft === 'trip' && ui.jdraft) {
+    ui.jdraft.data.tripId = t.value || null;
+    persistDraft(); render();
+    $('#jdraft-text')?.focus();
+    return;
+  }
   if (t.dataset.draft && ui.draft) {
     const field = t.dataset.draft;
     if (field === 'end') {
@@ -2694,7 +2737,7 @@ function followList() {
   const id = currentListDay();
   if (id === follow.dayId) return;
   follow.dayId = id;
-  if (ui.focusDay && ui.focusDay !== id) {
+  if (ui.focusDay !== id) {
     // Hervorhebung wandert mit, ohne die Liste neu aufzubauen (sonst springt das Scrollen).
     ui.focusDay = id; ui.sel = null;
     document.querySelectorAll('#days .day').forEach((x) => x.classList.toggle('is-focused', x.id === `day-${id}`));
