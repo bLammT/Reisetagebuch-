@@ -499,6 +499,11 @@ body.is-dragging-day, body.is-dragging-day * { cursor: grabbing !important; user
 .day + .night, .night-add { margin-top: 10px; }
 .night + .day-gap + .day, .night + .day { margin-top: 10px; border-top: 1px solid var(--line); }
 .night.is-empty { border-style: dashed; }
+.view-link {
+  width: 100%; border: 1px solid var(--line); border-radius: 7px; padding: 8px 10px; background: var(--field);
+  color: var(--ink); font: 13px var(--font-mono);
+}
+.ro-banner a { color: inherit; font-weight: 600; }
 .night.is-focused { background: var(--accent-soft); border-color: var(--accent); }
 .night-toggle { border: 0; background: none; padding: 0; color: inherit; cursor: pointer; text-align: left; }
 .night-toggle:hover { color: var(--accent); }

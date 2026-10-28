@@ -23,9 +23,12 @@
  *           fehlt der Trip, steht er wieder im Tagebuch des Tages
  *           Fotos liegen verkleinert in IndexedDB (zu groß für localStorage),
  *           mit Online-Sync zusätzlich auf dem Server (Tabelle photos, Schlüssel = photoId).
+ *
+ * Link zum Ansehen (…?server=…&trip=…&key=…): Die Reise wird ohne Konto nur angezeigt (Gastansicht).
+ * Eigene Reise, Online-Sync und Anmeldung auf diesem Gerät bleiben dabei unberührt.
  */
 
-const APP_VERSION = '2026-10-27.4';
+const APP_VERSION = '2026-10-28.1';
 const STORAGE_KEY = 'reisekarte.trip.v1';
 const ROUTE_CACHE_KEY = 'reisekarte.routes.v1';
 
@@ -183,12 +186,32 @@ function normalizeTrip(t) {
 
 /* ---------------------------------------------------------------- Zustand */
 
+// Gastansicht über einen Link zum Ansehen; der zuletzt geladene Stand liegt für offline getrennt von der eigenen Reise.
+const GUEST_KEY = 'reisekarte.guest.v1';
+const guest = (() => {
+  const p = new URLSearchParams(location.search);
+  const trip = p.get('trip'), key = p.get('key'), server = p.get('server');
+  if (!trip || !key || !server) return null;
+  try {
+    const u = new URL(server);
+    if (u.protocol !== 'https:' && !['localhost', '127.0.0.1'].includes(u.hostname)) return null;
+    return { url: u.origin, trip, key, pb: null, updated: null, error: null, offline: false };
+  } catch {
+    return null;
+  }
+})();
+const guestCache = () => {
+  const c = guest && loadJSON(GUEST_KEY, null);
+  return c && c.trip === guest.trip ? c : null;
+};
+
 let state;
 try {
-  const saved = loadJSON(STORAGE_KEY, null);
-  state = saved ? normalizeTrip(saved) : sampleTrip();
+  const saved = guest ? guestCache()?.data : loadJSON(STORAGE_KEY, null);
+  state = saved ? normalizeTrip(saved) : guest ? emptyTrip() : sampleTrip();
+  if (guest) guest.updated = guestCache()?.updated || null;
 } catch {
-  state = sampleTrip();
+  state = guest ? emptyTrip() : sampleTrip();
 }
 
 const ui = {
@@ -203,6 +226,7 @@ const ui = {
   collapsed: new Set(loadJSON('reisekarte.collapsed.v1', [])), // eingeklappte Tage (nur auf diesem Gerät)
 };
 function saveCollapsed() {
+  if (guest) return; // gehört zur eigenen Reise
   ui.collapsed.forEach((id) => { if (!dayById(id)) ui.collapsed.delete(id); }); // gelöschte Tage vergessen
   saveJSON('reisekarte.collapsed.v1', [...ui.collapsed]);
 }
@@ -211,7 +235,7 @@ function saveCollapsed() {
 const SYNC_KEY = 'reisekarte.sync.v1';
 const syncCfg = { url: '', tripId: null, tripTitle: '', remoteUpdated: null, dirty: false, role: 'owner', ...loadJSON(SYNC_KEY, {}) };
 // Mit dir nur zum Lesen geteilt: Die App zeigt alles, ändert aber nichts.
-const readOnly = () => Boolean(syncCfg.tripId) && syncCfg.role === 'viewer';
+const readOnly = () => Boolean(guest) || (Boolean(syncCfg.tripId) && syncCfg.role === 'viewer');
 const sync = {
   pb: null, // PocketBase-Client, sobald eine Server-Adresse eingetragen ist
   methods: null, // Anmeldearten des Servers
@@ -230,6 +254,7 @@ const photoSync = {
 };
 
 function save() {
+  if (guest) return; // Gastansicht: nichts speichern, die eigene Reise bleibt, wie sie ist
   saveJSON(STORAGE_KEY, state);
   markDirty();
 }
@@ -1534,6 +1559,8 @@ function render() {
   const ro = readOnly();
   $('.app').classList.toggle('is-readonly', ro);
   $('#ro-banner').hidden = !ro;
+  if (guest) $('#ro-banner').innerHTML = guestBannerHTML();
+  $('#sync-btn').hidden = Boolean(guest);
   const title = $('#trip-title');
   title.readOnly = ro;
   $('#start-date').disabled = ro;
@@ -1586,6 +1613,7 @@ function persistDraft() {
 }
 function restoreDraft() {
   const d = loadJSON(DRAFT_KEY, null);
+  if (guest) return false; // den angefangenen Eintrag der eigenen Reise nicht anfassen
   if (!d || !dayById(d.dayId) || readOnly()) { saveJSON(DRAFT_KEY, null); return false; }
   ui.jdraft = {
     dayId: d.dayId, entryId: state.journal.some((e) => e.id === d.entryId) ? d.entryId : null,
@@ -1613,7 +1641,7 @@ function closeEntryDraft(keepPhotos) {
 
 const saveSync = () => saveJSON(SYNC_KEY, syncCfg);
 const loggedIn = () => Boolean(sync.pb?.authStore.isValid);
-const linked = () => loggedIn() && Boolean(syncCfg.tripId);
+const linked = () => !guest && loggedIn() && Boolean(syncCfg.tripId);
 const parseServerTime = (s) => new Date(String(s).replace(' ', 'T'));
 const syncTimeFmt = new Intl.DateTimeFormat('de-DE', { dateStyle: 'short', timeStyle: 'short' });
 
@@ -1654,6 +1682,7 @@ function unlinkTrip() {
   sync.trips = null;
   saveJSON(BASE_KEY, null);
   Object.assign(share, { people: null, unsupported: false, needsPassword: false, invite: null, copied: false, error: null });
+  Object.assign(viewLink, { key: undefined, unsupported: false, copied: false, error: null });
   resetPhotoSync();
   saveSync();
 }
@@ -1747,6 +1776,124 @@ function shareHTML() {
     </div>` : ''}`;
 }
 
+/* Link zum Ansehen ohne Konto (Add-on ab Version 0.4.0): Schlüssel shareKey an der Reise, nur der Besitzer setzt ihn. */
+
+// key: undefined = noch nicht geladen, null = kein Link
+const viewLink = { key: undefined, unsupported: false, loading: false, busy: false, copied: false, error: null };
+
+// 24 Zufallsbytes als 32 Zeichen Base64url (der Server verlangt mindestens 32 Zeichen).
+function newViewKey() {
+  const bytes = crypto.getRandomValues(new Uint8Array(24));
+  return btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+const viewLinkURL = (key) => `${APP_URL}?server=${encodeURIComponent(syncCfg.url)}&trip=${encodeURIComponent(syncCfg.tripId)}&key=${encodeURIComponent(key)}`;
+
+async function loadViewLink() {
+  if (viewLink.loading) return;
+  viewLink.loading = true;
+  try {
+    const rec = await sync.pb.collection('trips').getOne(syncCfg.tripId, { fields: 'id,shareKey' });
+    viewLink.unsupported = !('shareKey' in rec); // älteres Add-on kennt das Feld nicht
+    viewLink.key = rec.shareKey || null;
+  } catch (err) {
+    viewLink.error = syncErrorText(err);
+    viewLink.key = null;
+  }
+  viewLink.loading = false;
+  renderSync();
+}
+
+async function setViewKey(key) {
+  Object.assign(viewLink, { busy: true, error: null, copied: false });
+  renderSync();
+  try {
+    const rec = await sync.pb.collection('trips').update(syncCfg.tripId, { shareKey: key }, { fields: 'id,updated,shareKey' });
+    if (!('shareKey' in rec)) {
+      viewLink.unsupported = true;
+    } else {
+      viewLink.key = rec.shareKey || null;
+      // Wie beim Teilen: Der Zeitstempel ändert sich, der Inhalt nicht.
+      syncCfg.remoteUpdated = rec.updated;
+      saveSync();
+    }
+  } catch (err) {
+    viewLink.error = syncErrorText(err);
+  }
+  viewLink.busy = false;
+  renderSync();
+}
+
+function viewLinkHTML() {
+  if (viewLink.unsupported) return '<p class="sync-meta">Dafür braucht das Home-Assistant-Add-on „Reisetagebuch Server“ Version 0.4.0 oder neuer.</p>';
+  if (viewLink.key === undefined) return '<p class="sync-meta">Lade …</p>';
+  const dis = viewLink.busy ? ' disabled' : '';
+  const intro = '<p class="sync-meta">Für Freunde und Familie: Wer den Link hat, sieht die Reise mit Tagebuch und Fotos, ohne Konto und ohne etwas ändern zu können.</p>';
+  const err = viewLink.error ? `<p class="editor-error" role="alert">${esc(viewLink.error)}</p>` : '';
+  if (!viewLink.key) return `${intro}<div class="editor-actions"><button class="btn primary" data-action="view-link-create"${dis}>Link erstellen</button></div>${err}`;
+  return `${intro}
+    <input class="view-link" type="text" readonly value="${esc(viewLinkURL(viewLink.key))}" aria-label="Link zum Ansehen">
+    <div class="editor-actions">
+      <button class="btn primary" data-action="view-link-copy"${dis}>${viewLink.copied ? 'Kopiert ✓' : 'Link kopieren'}</button>
+      ${navigator.share ? `<button class="btn" data-action="view-link-share"${dis}>Teilen …</button>` : ''}
+    </div>
+    <div class="editor-actions">
+      <button class="btn ghost" data-action="view-link-renew"${dis}>Neuer Link</button>
+      <button class="btn ghost" data-action="view-link-off"${dis}>Link abschalten</button>
+    </div>
+    <p class="sync-meta">Ein neuer Link oder „Abschalten“ macht den bisherigen Link sofort ungültig.</p>${err}`;
+}
+
+/* Gastansicht: Reise über einen Link zum Ansehen laden, nur lesen, ohne Anmeldung. */
+
+async function loadGuest(fit) {
+  if (!window.PocketBase) return;
+  if (!guest.pb) {
+    guest.pb = new PocketBase(guest.url);
+    guest.pb.autoCancellation(false);
+  }
+  const first = !guest.updated;
+  try {
+    const rec = await guest.pb.collection('trips').getOne(guest.trip, { fields: 'id,title,data,updated', query: { key: guest.key } });
+    guest.error = null; guest.offline = false;
+    if (rec.updated !== guest.updated) {
+      const next = normalizeTrip(rec.data);
+      next.journal = next.journal.filter((e) => next.days.some((d) => d.id === e.dayId));
+      state = next;
+      guest.updated = rec.updated;
+      saveJSON(GUEST_KEY, { trip: guest.trip, updated: rec.updated, data: rec.data });
+      if (focusPos() < 0) ui.focus = null;
+      ui.sel = null;
+      $('#trip-title').value = state.title;
+      render(); drawMap(fit || first);
+      if (first) setTimeout(() => { const i = todayIndex(); if (i >= 0) scrollToDay(state.days[i].id); }, 300);
+      return;
+    }
+  } catch (err) {
+    if (!err.status) guest.offline = true;
+    else if (err.status === 404 || err.status === 403) {
+      // Link abgeschaltet oder erneuert: auch den hier gespeicherten Stand nicht mehr zeigen.
+      guest.error = 'Dieser Link gilt nicht mehr. Bitte frag nach einem neuen.';
+      saveJSON(GUEST_KEY, null);
+      if (guest.updated) {
+        guest.updated = null;
+        state = emptyTrip();
+        state.title = 'Reise nicht verfügbar';
+        $('#trip-title').value = state.title;
+        ui.focus = null; ui.sel = null;
+        render(); drawMap(true);
+        return;
+      }
+    } else guest.error = syncErrorText(err);
+  }
+  render();
+}
+
+function guestBannerHTML() {
+  const when = guest.updated ? syncTimeFmt.format(parseServerTime(guest.updated)) : '';
+  const status = guest.error || (guest.offline ? `Offline${when ? `, Stand ${when}` : ''}` : when ? `Stand ${when}` : 'Wird geladen …');
+  return `👁 Nur ansehen · ${esc(status)} · <a href="${esc(APP_URL)}">Eigene Reisekarte öffnen</a>`;
+}
+
 /* Fotos: Hochladen nach dem Speichern, Herunterladen bei Bedarf (wenn ein Foto auf diesem Gerät fehlt). */
 
 function resetPhotoSync() {
@@ -1754,13 +1901,16 @@ function resetPhotoSync() {
   photoSync.downloads.clear();
 }
 
+const photoTrip = () => (guest ? guest.trip : syncCfg.tripId);
 function loadServerPhotos() {
-  const tripId = syncCfg.tripId;
-  photoSync.loading ||= sync.pb.collection('photos').getFullList({
-    filter: sync.pb.filter('trip = {:t}', { t: tripId }),
+  const tripId = photoTrip();
+  const pb = guest ? guest.pb : sync.pb;
+  photoSync.loading ||= pb.collection('photos').getFullList({
+    filter: pb.filter('trip = {:t}', { t: tripId }),
     fields: 'id,key,file,collectionId,collectionName',
+    ...(guest ? { query: { key: guest.key } } : {}),
   }).then((list) => {
-    if (syncCfg.tripId === tripId) {
+    if (photoTrip() === tripId) {
       photoSync.records = new Map(list.map((r) => [r.key, r]));
       photoSync.loadedAt = Date.now();
     }
@@ -1781,14 +1931,17 @@ async function fileToken() {
 }
 
 function downloadPhoto(id) {
-  if (!linked() || photoSync.unsupported) return Promise.resolve(null);
+  if (!(linked() || guest?.pb) || photoSync.unsupported) return Promise.resolve(null);
   if (!photoSync.downloads.has(id)) {
     const job = (async () => {
       try {
         if (!photoSync.records || (!photoSync.records.has(id) && Date.now() - photoSync.loadedAt > 10000)) await loadServerPhotos();
         const rec = photoSync.records?.get(id);
         if (!rec) return null;
-        const res = await fetch(sync.pb.files.getURL(rec, rec.file, { token: await fileToken() }));
+        const url = guest
+          ? guest.pb.files.getURL(rec, rec.file, { key: guest.key })
+          : sync.pb.files.getURL(rec, rec.file, { token: await fileToken() });
+        const res = await fetch(url);
         if (!res.ok) return null;
         const blob = await res.blob();
         await photoStore.put(id, blob).catch(() => {});
@@ -2145,7 +2298,8 @@ function syncBodyHTML() {
         <button class="btn" data-action="sync-unlink"${dis}>Andere Reise öffnen</button>
       </div>
     </div>
-    ${syncCfg.role === 'owner' ? `<div class="sync-box"><h3 class="sync-sub">Teilen</h3>${shareHTML()}</div>` : ''}${err}${footer}`;
+    ${syncCfg.role === 'owner' ? `<div class="sync-box"><h3 class="sync-sub">Teilen</h3>${shareHTML()}</div>
+      <div class="sync-box"><h3 class="sync-sub">Link zum Ansehen</h3>${viewLinkHTML()}</div>` : ''}${err}${footer}`;
 }
 
 function renderSync() {
@@ -2159,6 +2313,7 @@ function renderSync() {
   if (focused) dlg.querySelector(`[name="${focused}"]`)?.focus();
   // Teilen-Liste nachladen, z. B. direkt nachdem die Reise hochgeladen wurde.
   if (linked() && syncCfg.role === 'owner' && share.people === null && !share.unsupported) loadShares();
+  if (linked() && syncCfg.role === 'owner' && viewLink.key === undefined && !viewLink.unsupported) loadViewLink();
 }
 
 function openSync() {
@@ -2642,6 +2797,28 @@ const actions = {
     if (!confirm(`${el.dataset.email} ausladen? Die Person sieht die Reise danach nicht mehr.`)) return;
     sendShare({ email: el.dataset.email, role: 'remove' });
   },
+  'view-link-create'() { setViewKey(newViewKey()); },
+  'view-link-renew'() {
+    if (confirm('Neuen Link erstellen? Der bisherige Link funktioniert dann nicht mehr.')) setViewKey(newViewKey());
+  },
+  'view-link-off'() {
+    if (confirm('Link abschalten? Wer ihn hat, sieht die Reise dann nicht mehr.')) setViewKey('');
+  },
+  async 'view-link-copy'() {
+    const url = viewLinkURL(viewLink.key);
+    try {
+      await navigator.clipboard.writeText(url);
+    } catch {
+      $('#sync-dialog .view-link')?.select(); document.execCommand?.('copy');
+    }
+    viewLink.copied = true;
+    renderSync();
+  },
+  async 'view-link-share'() {
+    try {
+      await navigator.share({ title: state.title, text: `Hier kannst du unsere Reise „${state.title}“ mitverfolgen:`, url: viewLinkURL(viewLink.key) });
+    } catch { /* abgebrochen */ }
+  },
   async 'share-copy'() {
     const ta = $('#sync-dialog .invite-text');
     try {
@@ -2686,7 +2863,7 @@ const actions = {
 // Was im Nur-Lesen-Modus geht: ansehen, auswählen, ein-/ausklappen, Sync, Export.
 const READONLY_OK = new Set(['select', 'focus-day', 'focus-night', 'toggle-day', 'collapse-all', 'expand-all', 'open-photo', 'close-photo',
   'open-sync', 'close-sync', 'toggle-menu', 'export', 'fit-all', 'retry-routes', 'toggle-follow', 'today', 'toggle-map',
-  'toggle-legend', 'edit-journey', 'share-copy']);
+  'toggle-legend', 'edit-journey', 'share-copy', 'view-link-copy', 'view-link-share']);
 
 function setMenu(open) {
   $('#trip-menu').hidden = !open;
@@ -3062,7 +3239,7 @@ if (loadJSON('reisekarte.legend.v1', true) === false) {
 {
   const params = new URLSearchParams(location.search);
   const invited = params.get('server');
-  if (invited) {
+  if (invited && !guest) {
     history.replaceState(null, '', location.pathname);
     try {
       const u = new URL(invited);
@@ -3075,25 +3252,31 @@ if (loadJSON('reisekarte.legend.v1', true) === false) {
   }
 }
 
-// Online-Sync: Anmeldung auffrischen und Stand vom Server holen.
-connectServer();
-renderSyncStatus();
-if (loggedIn()) {
-  sync.pb.collection('users').authRefresh().catch((err) => {
-    if (err.status === 401) { sync.pb.authStore.clear(); renderSyncStatus(); }
-  });
-  pullTrip();
+// Online-Sync: Anmeldung auffrischen und Stand vom Server holen. In der Gastansicht nur die angesehene Reise laden.
+if (guest) {
+  loadGuest(false);
+} else {
+  connectServer();
+  renderSyncStatus();
+  if (loggedIn()) {
+    sync.pb.collection('users').authRefresh().catch((err) => {
+      if (err.status === 401) { sync.pb.authStore.clear(); renderSyncStatus(); }
+    });
+    pullTrip();
+  }
 }
+const refresh = () => (guest ? loadGuest(false) : syncCfg.dirty ? pushTrip() : pullTrip());
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') pullTrip();
+  if (document.visibilityState === 'visible') refresh();
 });
-window.addEventListener('online', () => (syncCfg.dirty ? pushTrip() : pullTrip()));
+window.addEventListener('online', refresh);
 setInterval(() => {
-  if (document.visibilityState === 'visible') (syncCfg.dirty ? pushTrip() : pullTrip());
+  if (document.visibilityState === 'visible') refresh();
 }, 60000);
 
 // Auf dem Handy direkt zum heutigen Tag springen.
-if (todayIndex() >= 0) setTimeout(() => scrollToDay(state.days[todayIndex()].id), 300);
+// (Index erst beim Springen bestimmen: Die Gastansicht kann die Reise inzwischen ausgetauscht haben.)
+setTimeout(() => { const i = todayIndex(); if (i >= 0) scrollToDay(state.days[i].id); }, 300);
 
 // Browser bitten, die Daten nicht automatisch zu löschen (wird nicht überall gewährt).
 navigator.storage?.persist?.().catch(() => {});
