@@ -13,10 +13,11 @@
  *           night = wo man schläft; transit = true: die Nacht wird unterwegs verbracht (z. B. Nachtzug)
  *   Journey = { from: Place|null, to: Place|null, mode }  nur bei transit
  *           from = null heißt: Abfahrt dort, wo man morgens aufgewacht ist
- *   Trip  = { id, name, from: Place|null, via: [Place], end: 'start'|'night'|'place', to: Place|null, mode }
+ *   Trip  = { id, name, from: Place|null, via: [Place], end: 'start'|'night'|'place', to: Place|null, mode, endMode? }
  *           Start → Stopps (via) → Ende; from = null heißt: Start dort, wo man aufgewacht ist.
+ *           mode = Verkehrsmittel des Trips; ein Stopp kann mit eigenem mode erreicht werden, das Ende mit endMode.
  *           end: 'start' = zurück zum Start (Ausflug), 'night' = zur Unterkunft der Nacht (Weiterreise), 'place' = zu „to“
- *   Place = { name, label, lat, lon, note? }  note = was man dort macht (nur bei Stopps)
+ *   Place = { name, label, lat, lon, note?, mode? }  note = was man dort macht, mode = wie man hinkommt (nur bei Stopps)
  *   trip.journal = [Entry]
  *   Entry = { id, dayId, tripId?, at: ISO-Zeit, text, place: Place|null, photos: [photoId], links: [url] }
  *           tripId = Eintrag gehört zu diesem Trip (Ausflug/Weiterreise) und steht in der Liste darunter;
@@ -28,7 +29,7 @@
  * Eigene Reise, Online-Sync und Anmeldung auf diesem Gerät bleiben dabei unberührt.
  */
 
-const APP_VERSION = '2026-10-28.1';
+const APP_VERSION = '2026-11-01.1';
 const STORAGE_KEY = 'reisekarte.trip.v1';
 const ROUTE_CACHE_KEY = 'reisekarte.routes.v1';
 
@@ -148,7 +149,11 @@ function normalizeNight(n) {
 }
 const TRIP_ENDS = ['start', 'night', 'place'];
 function normalizeEx(x) {
-  const via = (Array.isArray(x.via) ? x.via : []).map(normalizePlace).filter(Boolean);
+  const via = (Array.isArray(x.via) ? x.via : []).map((p) => {
+    const out = normalizePlace(p);
+    if (out && PROFILES[p.mode]) out.mode = p.mode;
+    return out;
+  }).filter(Boolean);
   let to = normalizePlace(x.to);
   let end = TRIP_ENDS.includes(x.end) ? x.end : null;
   if (!end) {
@@ -157,7 +162,10 @@ function normalizeEx(x) {
     if (x.roundtrip && to) { via.push(to); to = null; }
   }
   if (end !== 'place') to = null;
-  return { id: String(x.id || uid()), name: String(x.name || ''), from: normalizePlace(x.from), via, end, to, mode: PROFILES[x.mode] ? x.mode : 'car' };
+  return {
+    id: String(x.id || uid()), name: String(x.name || ''), from: normalizePlace(x.from), via, end, to, mode: PROFILES[x.mode] ? x.mode : 'car',
+    ...(PROFILES[x.endMode] ? { endMode: x.endMode } : {}),
+  };
 }
 const exValid = (x) => (x.end === 'place' ? Boolean(x.to) : x.end === 'start' ? x.via.length > 0 : true);
 function normalizeTrip(t) {
@@ -472,7 +480,35 @@ function airMeters(pts) {
   for (let k = 1; k < pts.length; k++) km += kmBetween(pts[k - 1], pts[k]);
   return km * 1000;
 }
-const exStats = (i, ex) => legStats(ex.mode, waypoints(i, ex));
+// Abschnitte eines Trips mit ihrem Verkehrsmittel. Aufeinanderfolgende Abschnitte mit demselben
+// Verkehrsmittel werden zusammengefasst (eine Route statt mehrerer, wie vor den Verkehrsmitteln pro Stopp).
+function tripLegs(i, ex) {
+  const pts = waypoints(i, ex);
+  if (pts.length < 2) return [];
+  const modes = [...ex.via.map((p) => p.mode || ex.mode), ex.endMode || ex.mode];
+  const legs = [];
+  modes.forEach((mode, k) => {
+    const last = legs[legs.length - 1];
+    if (last && last.mode === mode) last.pts.push(pts[k + 1]);
+    else legs.push({ mode, pts: [pts[k], pts[k + 1]] });
+  });
+  return legs;
+}
+const tripModes = (ex) => [...new Set([...ex.via.map((p) => p.mode || ex.mode), ex.endMode || ex.mode])];
+function exStats(i, ex) {
+  const parts = tripLegs(i, ex).map((l) => legStats(l.mode, l.pts)).filter(Boolean);
+  if (parts.length < 2) return parts[0] || null;
+  // Gemischt (z. B. Auto und Zug): Strecke zusammenzählen, Fahrzeit nur, wenn sie für alle Abschnitte bekannt ist.
+  const known = parts.every((p) => p.s != null);
+  return {
+    m: parts.reduce((n, p) => n + p.m, 0),
+    s: known ? parts.reduce((n, p) => n + p.s, 0) : null,
+    approx: parts.some((p) => p.approx),
+    direct: parts.every((p) => p.direct),
+    pending: parts.some((p) => p.pending),
+    mixed: true,
+  };
+}
 function transferStats(i) {
   const t = transferFor(i);
   return t ? legStats('car', [t.from, t.to]) : null;
@@ -493,6 +529,7 @@ function fmtDur(s) {
 function fmtStats(st) {
   if (!st) return '';
   if (st.direct) return `≈ ${fmtKm(st.m)} direkt`;
+  if (st.mixed && st.approx) return `≈ ${fmtKm(st.m)}${st.pending ? ' · Route lädt…' : ''}`;
   if (st.approx) return `≈ ${fmtKm(st.m)} Luftlinie${st.pending ? ' · Route lädt…' : ''}`;
   return `${fmtKm(st.m)} · ${fmtDur(st.s)}`;
 }
@@ -792,14 +829,17 @@ function drawMap(fit) {
       if (pts.length < 2) return;
       const key = `trip:${ex.id}`;
       const level = levelOf(pos, key);
-      const r = getRoute(ex.mode, pts);
-      const ll = legLatLngs(ex.mode, pts, r);
-      drawLine(ll, color, {
-        pos, level, approx: !(r && r.coords), weight: 4, dash: DASH[ex.mode],
-        tooltip: `Tag ${i + 1}: ${esc(tripTitle(i, ex))} (${PROFILES[ex.mode].label})`,
-        onClick: pick(key, fkey),
+      // Jeder Abschnitt in seinem Verkehrsmittel (gestrichelt bei Zug, Fähre, Flug).
+      tripLegs(i, ex).forEach((leg) => {
+        const r = getRoute(leg.mode, leg.pts);
+        const ll = legLatLngs(leg.mode, leg.pts, r);
+        drawLine(ll, color, {
+          pos, level, approx: !(r && r.coords), weight: 4, dash: DASH[leg.mode],
+          tooltip: `Tag ${i + 1}: ${esc(tripTitle(i, ex))} (${PROFILES[leg.mode].label})`,
+          onClick: pick(key, fkey),
+        });
+        collect(ll, key);
       });
-      collect(ll, key);
 
       const op = MARKER_OPACITY[level];
       const big = level === 'selected' ? 2 : 0;
@@ -1200,8 +1240,11 @@ function pickerHTML(key, place, placeholder = 'Ort, Restaurant, Koordinaten oder
 function exHTML(d, i, ex) {
   const start = ex.from || stayPlaceFor(i);
   const end = endPlace(i, ex);
-  const stop = (p) => `${esc(p.name)}${p.note ? ` <span class="ex-note">(${esc(p.note)})</span>` : ''}`;
-  const route = [start ? esc(start.name) : '?', ...ex.via.map(stop), end ? esc(end.name) : '?'].join(' → ');
+  // Mehrere Verkehrsmittel: vor jedem Ziel steht, womit man hinkommt.
+  const mixed = tripModes(ex).length > 1;
+  const how = (mode) => (mixed ? `<span class="ex-mode">${PROFILES[mode || ex.mode].label}</span> ` : '');
+  const stop = (p) => `${how(p.mode)}${esc(p.name)}${p.note ? ` <span class="ex-note">(${esc(p.note)})</span>` : ''}`;
+  const route = [start ? esc(start.name) : '?', ...ex.via.map(stop), `${how(ex.endMode)}${end ? esc(end.name) : '?'}`].join(' → ');
   const key = `trip:${ex.id}`;
   return `<div class="ex selectable${ui.sel === key ? ' is-selected' : ''}" data-action="select" data-sel="${key}" data-day="${d.id}" role="button" tabindex="0" aria-pressed="${ui.sel === key}">
     <div class="ex-body">
@@ -1209,7 +1252,7 @@ function exHTML(d, i, ex) {
       <div class="ex-route">${route}</div>
       <div class="ex-meta">
         <span class="chip">${END_LABEL[ex.end]}</span>
-        <span class="chip">${PROFILES[ex.mode].label}</span>
+        <span class="chip">${tripModes(ex).map((m) => PROFILES[m].label).join(' + ')}</span>
         <span class="ex-stat" data-stat="ex:${d.id}:${ex.id}"></span>
       </div>
     </div>
@@ -1226,6 +1269,11 @@ function editorHTML(d, i) {
   const stay = stayPlaceFor(i);
   const evening = eveningPlace(i);
   const seg = (name, field, value, label) => `<label><input type="radio" name="${name}" data-draft="${field}" value="${value}" ${data[field] === value ? 'checked' : ''}>${label}</label>`;
+  // Verkehrsmittel für den Weg zu einem Stopp bzw. zum Ende; leer = wie beim Trip.
+  const legSelect = (attr, value, label) => `<select class="leg-mode" ${attr} aria-label="${label}">
+      <option value="">${esc(PROFILES[data.mode].label)} (wie oben)</option>
+      ${Object.entries(PROFILES).filter(([k]) => k !== data.mode).map(([k, v]) => `<option value="${k}" ${value === k ? 'selected' : ''}>${v.label}</option>`).join('')}
+    </select>`;
   return `<div class="editor">
     <p class="editor-title">${exId ? 'Trip bearbeiten' : 'Neuer Trip'}</p>
     <label class="text-field">Name (optional)
@@ -1239,12 +1287,19 @@ function editorHTML(d, i) {
       </div>
       ${data.fromMode === 'custom' ? pickerHTML('draft:from', data.from, 'Startort suchen') : ''}
     </div>
+    <label class="text-field">Unterwegs mit
+      <select id="draft-mode" data-draft="mode">
+        ${Object.entries(PROFILES).map(([k, v]) => `<option value="${k}" ${data.mode === k ? 'selected' : ''}>${v.label}</option>`).join('')}
+      </select>
+      <span class="field-hint">Gilt für alle Abschnitte. Bei jedem Stopp lässt sich ein anderes wählen.</span>
+    </label>
     <div>
       <div class="field-label">Stopps</div>
       <ol class="vias">
         ${data.via.map((p, k) => `<li class="via-item">
           <span class="via-n">${k + 1}</span>
           <div class="via-fields">
+            <label class="leg-row">Hin mit ${legSelect(`data-draft-leg="${k}"`, data.modes[k], `Verkehrsmittel zu Stopp ${k + 1}`)}</label>
             ${pickerHTML(`draft:via:${k}`, p, `Stopp ${k + 1} suchen`)}
             <input class="via-note" type="text" data-draft-note="${k}" value="${esc(data.notes[k] || '')}" placeholder="Was machst du dort? (optional)" aria-label="Notiz zu Stopp ${k + 1}">
           </div>
@@ -1261,12 +1316,8 @@ function editorHTML(d, i) {
         ${seg('draft-end', 'end', 'place', 'Anderer Ort')}
       </div>
       ${data.end === 'place' ? pickerHTML('draft:to', data.to, 'Ziel suchen') : ''}
+      <label class="leg-row">Zum Ende mit ${legSelect('data-draft-leg="end"', data.endMode, 'Verkehrsmittel zum Ende')}</label>
     </div>
-    <label class="text-field">Unterwegs mit
-      <select id="draft-mode" data-draft="mode">
-        ${Object.entries(PROFILES).map(([k, v]) => `<option value="${k}" ${data.mode === k ? 'selected' : ''}>${v.label}</option>`).join('')}
-      </select>
-    </label>
     ${error ? `<p class="editor-error">${esc(error)}</p>` : ''}
     <div class="editor-actions">
       <button class="btn primary" data-action="save-ex">Trip speichern</button>
@@ -2337,10 +2388,10 @@ function newDraft(dayId, ex) {
     data: ex
       ? {
         name: ex.name, fromMode: ex.from ? 'custom' : 'stay', from: clone(ex.from),
-        via: ex.via.map(({ note, ...p }) => p), notes: ex.via.map((p) => p.note || ''),
-        end: ex.end, to: clone(ex.to), mode: ex.mode,
+        via: ex.via.map(({ note, mode, ...p }) => p), notes: ex.via.map((p) => p.note || ''), modes: ex.via.map((p) => p.mode || ''),
+        end: ex.end, to: clone(ex.to), mode: ex.mode, endMode: ex.endMode || '',
       }
-      : { name: '', fromMode: 'stay', from: null, via: [null], notes: [''], end: 'start', to: null, mode: 'car' },
+      : { name: '', fromMode: 'stay', from: null, via: [null], notes: [''], modes: [''], end: 'start', to: null, mode: 'car', endMode: '' },
   };
 }
 function closeDraft() {
@@ -2473,7 +2524,13 @@ const actions = {
   'save-ex'() {
     const { dayId, exId, data } = ui.draft;
     const i = dayIndex(dayId);
-    const via = data.via.map((p, k) => p && (data.notes[k]?.trim() ? { ...p, note: data.notes[k].trim().slice(0, 200) } : p)).filter(Boolean);
+    // Eigenes Verkehrsmittel nur speichern, wenn es von dem des Trips abweicht.
+    const own = (m) => (m && m !== data.mode ? m : null);
+    const via = data.via.map((p, k) => p && {
+      ...p,
+      ...(data.notes[k]?.trim() ? { note: data.notes[k].trim().slice(0, 200) } : {}),
+      ...(own(data.modes[k]) ? { mode: data.modes[k] } : {}),
+    }).filter(Boolean);
     const fail = (msg) => { ui.draft.error = msg; render(); };
     if (data.fromMode === 'custom' && !data.from) return fail('Wähle einen Startort oder starte bei der Unterkunft.');
     if (data.fromMode === 'stay' && !stayPlaceFor(i)) return fail('Für diesen Tag gibt es noch keine Unterkunft. Trag eine Übernachtung ein oder wähle „Anderer Ort“ als Start.');
@@ -2488,6 +2545,7 @@ const actions = {
       end: data.end,
       to: data.end === 'place' ? data.to : null,
       mode: data.mode,
+      ...(own(data.endMode) ? { endMode: data.endMode } : {}),
     };
     const d = state.days[i];
     const pos = d.trips.findIndex((x) => x.id === ex.id);
@@ -2498,12 +2556,14 @@ const actions = {
   'add-via'() {
     ui.draft.data.via.push(null);
     ui.draft.data.notes.push('');
+    ui.draft.data.modes.push('');
     render();
     document.querySelector(`[data-picker="draft:via:${ui.draft.data.via.length - 1}"]`)?.focus();
   },
   'remove-via'(el) {
     ui.draft.data.via.splice(Number(el.dataset.idx), 1);
     ui.draft.data.notes.splice(Number(el.dataset.idx), 1);
+    ui.draft.data.modes.splice(Number(el.dataset.idx), 1);
     ui.pickers = Object.fromEntries(Object.entries(ui.pickers).filter(([k]) => !k.startsWith('draft:via:')));
     if (ui.mapPick?.startsWith('draft:via:')) ui.mapPick = null;
     render();
@@ -2922,12 +2982,18 @@ document.addEventListener('change', (e) => {
       ui.draft.data.end = t.value;
       render();
       if (t.value === 'place') document.querySelector('[data-picker="draft:to"]')?.focus();
-    } else if (field === 'mode') ui.draft.data.mode = t.value;
+    } else if (field === 'mode') {
+      ui.draft.data.mode = t.value;
+      render(); // „(wie oben)“ bei den Stopps anpassen
+    }
     else if (field === 'fromMode') {
       ui.draft.data.fromMode = t.value;
       render();
       if (t.value === 'custom') document.querySelector('[data-picker="draft:from"]')?.focus();
     }
+  } else if (t.dataset.draftLeg !== undefined && ui.draft) {
+    const k = t.dataset.draftLeg;
+    if (k === 'end') ui.draft.data.endMode = t.value; else ui.draft.data.modes[Number(k)] = t.value;
   } else if (t.dataset.shareRole) {
     sendShare({ email: t.dataset.shareRole, role: t.value });
   } else if (t.dataset.journeyMode) {

@@ -228,6 +228,14 @@ button, input, select { font: inherit; color: inherit; }
   font: 600 12px/1 var(--font-mono);
 }
 .via-fields { flex: 1; min-width: 0; display: grid; gap: 4px; }
+/* Verkehrsmittel pro Abschnitt */
+.leg-row { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+.leg-mode {
+  border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; background: var(--field);
+  color: var(--ink); font: 12px var(--font-body);
+}
+.field-hint { display: block; font-size: 12px; color: var(--muted); font-weight: 400; }
+.ex-mode { font: 500 10px/1 var(--font-mono); padding: 2px 4px; border-radius: 3px; background: var(--accent-soft); color: var(--accent); vertical-align: 1px; }
 .via-note {
   border: 1px solid var(--line); border-radius: 7px; padding: 5px 9px; background: var(--field);
   color: var(--ink); font-size: 14px; width: 100%;
